@@ -232,10 +232,11 @@ async def _job_sse_generator(
     description=(
         "Opens a Server-Sent Events stream for the given job_id. "
         "Events are forwarded from the Redis pub/sub channel as the worker "
-        "publishes them. Connect immediately after POST /api/query to avoid "
-        "missing early token events.\n\n"
-        "Returns **404** if the job_id does not exist or has expired "
-        f"(TTL: JOB_TTL_SECONDS seconds)."
+        "publishes them.\n\n"
+        "The **metadata** event now includes a `cache_hit` boolean field:\n"
+        "- `cache_hit: true` — answer served from semantic cache (~8ms)\n"
+        "- `cache_hit: false` — answer generated live by the LLM (~2.5s)\n\n"
+        "Returns **404** if the job_id does not exist or has expired."
     ),
     status_code=status.HTTP_200_OK,
 )
