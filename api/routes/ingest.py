@@ -30,7 +30,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from pydantic import BaseModel
 from sentence_transformers import SentenceTransformer
 
-from api.dependencies import get_pool
+from api.dependencies import get_pool, verify_backend_access
 
 log = structlog.get_logger(__name__)
 router = APIRouter()
@@ -155,6 +155,7 @@ class DocumentInfo(BaseModel):
 async def ingest_pdf(
     file: UploadFile = File(..., description="PDF file to ingest"),
     pool: asyncpg.Pool = Depends(get_pool),
+    _: None = Depends(verify_backend_access),
 ) -> IngestResponse:
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(

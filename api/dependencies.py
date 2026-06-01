@@ -21,10 +21,77 @@ Why app.state over module-level globals:
 """
 
 from __future__ import annotations
-import redis.asyncio as aioredis
+
+import os
+import time
+
 import asyncpg
-from fastapi import Request
+import httpx
+import jwt
+import redis.asyncio as aioredis
+import structlog
+from fastapi import Header, HTTPException, Request, status
 from sentence_transformers import SentenceTransformer
+
+log = structlog.get_logger(__name__)
+
+# ── Clerk JWT verification ────────────────────────────────────────────────────
+# If CLERK_JWKS_URL is not set the backend is open (development / local run).
+# Set it to https://<your-clerk-domain>/.well-known/jwks.json to require auth.
+
+_jwks_client: jwt.PyJWKClient | None = None
+_jwks_loaded_at: float = 0
+_JWKS_TTL = 3600  # re-fetch the key set hourly
+
+
+def _get_jwks_client() -> jwt.PyJWKClient | None:
+    global _jwks_client, _jwks_loaded_at
+    url = os.getenv("CLERK_JWKS_URL")
+    if not url:
+        return None
+    now = time.monotonic()
+    if _jwks_client is None or now - _jwks_loaded_at > _JWKS_TTL:
+        _jwks_client = jwt.PyJWKClient(url, cache_keys=True)
+        _jwks_loaded_at = now
+    return _jwks_client
+
+
+async def verify_backend_access(
+    authorization: str | None = Header(default=None),
+) -> None:
+    """
+    Optional Clerk JWT gate for paid/cloud backend routes.
+
+    - If CLERK_JWKS_URL is not set → open access (dev mode).
+    - If set → requires a valid Clerk session token in Authorization: Bearer <token>.
+      Any successfully authenticated Clerk user is granted access.
+      Finer-grained tier checks (free vs paid) can be added here later by
+      inspecting payload["publicMetadata"]["tier"].
+    """
+    client = _get_jwks_client()
+    if client is None:
+        return  # Auth disabled — open access
+
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required. Sign in at the app to use cloud mode.",
+        )
+
+    token = authorization[len("Bearer "):]
+    try:
+        signing_key = client.get_signing_key_from_jwt(token)
+        jwt.decode(
+            token,
+            signing_key.key,
+            algorithms=["RS256"],
+            options={"verify_exp": True},
+        )
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired. Please sign in again.")
+    except jwt.PyJWTError as exc:
+        log.warning("clerk_jwt_invalid", error=str(exc))
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid authentication token.")
 
 
 def get_pool(request: Request) -> asyncpg.Pool:

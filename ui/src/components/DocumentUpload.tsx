@@ -9,7 +9,7 @@ type UploadState =
   | { kind: "success"; filename: string; pages: number; chunks: number }
   | { kind: "error"; message: string };
 
-export function DocumentUpload() {
+export function DocumentUpload({ token }: { token?: string } = {}) {
   const [open, setOpen] = useState(false);
   const [docs, setDocs] = useState<DocumentInfo[]>([]);
   const [uploadState, setUploadState] = useState<UploadState>({ kind: "idle" });
@@ -18,11 +18,11 @@ export function DocumentUpload() {
 
   const fetchDocs = useCallback(async () => {
     try {
-      setDocs(await listDocuments());
+      setDocs(await listDocuments(token));
     } catch {
       // silently ignore — backend may not be running in dev
     }
-  }, []);
+  }, [token]);
 
   useEffect(() => {
     if (open) fetchDocs();
@@ -36,7 +36,7 @@ export function DocumentUpload() {
       }
       setUploadState({ kind: "uploading", filename: file.name });
       try {
-        const result = await uploadPdf(file);
+        const result = await uploadPdf(file, token);
         setUploadState({
           kind: "success",
           filename: result.filename,

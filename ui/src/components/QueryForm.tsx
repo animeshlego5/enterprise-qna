@@ -4,7 +4,7 @@ import { useState, useRef } from "react";
 import { submitQuery, streamAnswer, MetadataEvent } from "@/lib/api";
 import { AnswerStream } from "./AnswerStream";
 
-export function QueryForm() {
+export function QueryForm({ token }: { token?: string } = {}) {
   const [question, setQuestion] = useState("");
   const [tokens, setTokens] = useState<string[]>([]);
   const [metadata, setMetadata] = useState<MetadataEvent["data"] | null>(null);
@@ -26,10 +26,10 @@ export function QueryForm() {
     abortRef.current = false;
 
     try {
-      const job = await submitQuery({ question });
+      const job = await submitQuery({ question }, token);
       setJobId(job.job_id);
 
-      for await (const event of streamAnswer(job.job_id)) {
+      for await (const event of streamAnswer(job.job_id, token)) {
         if (abortRef.current) break;
 
         switch (event.event) {

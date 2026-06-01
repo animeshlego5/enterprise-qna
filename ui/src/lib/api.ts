@@ -66,6 +66,10 @@ export type SSEEvent =
 
 const API_BASE = "";  // Empty string: all requests go through Next.js rewrites.
 
+function authHeaders(token?: string): Record<string, string> {
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 // ── Ingest / document management ─────────────────────────────────────────────
 
 export interface IngestResponse {
@@ -79,12 +83,13 @@ export interface DocumentInfo {
   chunk_count: number;
 }
 
-export async function uploadPdf(file: File): Promise<IngestResponse> {
+export async function uploadPdf(file: File, token?: string): Promise<IngestResponse> {
   const body = new FormData();
   body.append("file", file);
 
   const response = await fetch(`${API_BASE}/api/ingest`, {
     method: "POST",
+    headers: authHeaders(token),
     body,
   });
 
@@ -96,18 +101,21 @@ export async function uploadPdf(file: File): Promise<IngestResponse> {
   return response.json();
 }
 
-export async function listDocuments(): Promise<DocumentInfo[]> {
-  const response = await fetch(`${API_BASE}/api/documents`);
+export async function listDocuments(token?: string): Promise<DocumentInfo[]> {
+  const response = await fetch(`${API_BASE}/api/documents`, {
+    headers: authHeaders(token),
+  });
   if (!response.ok) throw new Error(`Failed to load documents: HTTP ${response.status}`);
   return response.json();
 }
 
 export async function submitQuery(
-  request: QueryRequest
+  request: QueryRequest,
+  token?: string,
 ): Promise<JobSubmitResponse> {
   const response = await fetch(`${API_BASE}/api/query`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders(token) },
     body: JSON.stringify(request),
   });
 
@@ -133,9 +141,9 @@ export async function submitQuery(
  *     if (event.event === "token") appendToken(event.data);
  *   }
  */
-export async function* streamAnswer(jobId: string): AsyncGenerator<SSEEvent> {
+export async function* streamAnswer(jobId: string, token?: string): AsyncGenerator<SSEEvent> {
   const response = await fetch(`${API_BASE}/api/query/${jobId}/stream`, {
-    headers: { Accept: "text/event-stream" },
+    headers: { Accept: "text/event-stream", ...authHeaders(token) },
   });
 
   if (!response.ok) {

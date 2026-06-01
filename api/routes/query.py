@@ -34,7 +34,7 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException, status
 from sse_starlette.sse import EventSourceResponse
 
-from api.dependencies import get_pool, get_redis
+from api.dependencies import get_pool, get_redis, verify_backend_access
 from api.models import JobSubmitResponse, JobStatus, QueryRequest
 from api.routes.metrics import JOBS_SUBMITTED, SSE_CONNECTIONS
 
@@ -62,6 +62,7 @@ router = APIRouter()
 async def submit_query(
     body: QueryRequest,
     redis_client: aioredis.Redis = Depends(get_redis),
+    _: None = Depends(verify_backend_access),
 ) -> JobSubmitResponse:
     """
     Enqueue a RAG job.
