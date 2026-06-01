@@ -47,8 +47,10 @@ Error handling:
     Connection-level errors (Redis or DB unreachable) trigger a restart loop
     with exponential backoff — the worker retries connection indefinitely.
 """
-
 from __future__ import annotations
+
+from pipeline.cache import write_cache_entry
+from pipeline.retrieval import retrieve_docs, retrieve_cached_answer
 
 import asyncio
 import json
@@ -66,7 +68,6 @@ from sentence_transformers import SentenceTransformer
 from api.logging_config import configure_logging
 from pipeline.llm import get_llm
 from pipeline.rag_prompt import RAG_PROMPT
-from pipeline.retrieval import retrieve_docs
 
 load_dotenv()
 configure_logging()
@@ -257,25 +258,29 @@ async def _process_job(
     fields: dict[str, str],
 ) -> None:
     """
-    Run the full RAG pipeline for one job and publish results via pub/sub.
+    Run the full RAG pipeline for one job, with semantic cache check.
 
-    This function contains the same four-stage logic as Week 2's
-    token_stream_generator — Embed → Retrieve → Prompt → Generate — but
-    it runs in the worker process and delivers results through Redis
-    instead of directly to an HTTP response.
+    Stages:
+      1. Embed      — always runs (embedding needed for cache lookup)
+      2. Cache hit? — cosine similarity against semantic_cache
+          └── HIT:  replay cached answer as token stream, write DONE, return
+          └── MISS: continue to stages 3–6
+      3. Retrieve   — vector search against enterprise_docs
+      4. Prompt     — format RAG prompt with retrieved context
+      5. Generate   — stream tokens from Gemini, accumulate full answer
+      6. Cache write — write question + answer + embedding to semantic_cache
 
-    Args:
-        redis_client: Async Redis client for PUBLISH and SET operations.
-        pool: asyncpg connection pool for vector retrieval.
-        embed_model: Loaded SentenceTransformer for query embedding.
-        message_id: Redis Stream message ID, used for XACK.
-        fields: Job fields from the stream message (all values are strings).
+    The embedding from Stage 1 is reused in both Stage 2 (cache lookup) and
+    Stage 6 (cache write). Single computation, two uses.
     """
     job_id = fields["job_id"]
     question = fields["question"]
     top_k = int(fields.get("top_k", str(TOP_K)))
     similarity_threshold = float(fields.get("similarity_threshold", str(SIMILARITY_THRESHOLD)))
     channel = f"job:{job_id}"
+
+    cache_threshold = float(os.getenv("SEMANTIC_CACHE_THRESHOLD", "0.92"))
+    cache_top_k = int(os.getenv("SEMANTIC_CACHE_TOP_K", "3"))
 
     structlog.contextvars.bind_contextvars(
         job_id=job_id,
@@ -284,8 +289,6 @@ async def _process_job(
     )
 
     log.info("job_processing_start")
-
-    # Update status: queued → processing
     await redis_client.set(f"job:{job_id}:status", "processing", ex=JOB_TTL)
 
     t_start = time.perf_counter()
@@ -300,7 +303,79 @@ async def _process_job(
         embed_ms = (time.perf_counter() - t0) * 1000
         log.info("stage_embed_complete", latency_ms=round(embed_ms, 1))
 
-        # ── Stage 2: Retrieve ─────────────────────────────────────────────────
+        # ── Stage 2: Semantic cache lookup ────────────────────────────────────
+        t_cache = time.perf_counter()
+        async with pool.acquire() as conn:
+            cache_result = await retrieve_cached_answer(
+                conn,
+                embedding,
+                threshold=cache_threshold,
+                top_k=cache_top_k,
+            )
+        cache_lookup_ms = (time.perf_counter() - t_cache) * 1000
+        log.info("stage_cache_lookup_complete", latency_ms=round(cache_lookup_ms, 1))
+
+        if cache_result is not None:
+            cached_question, cached_answer, similarity = cache_result
+
+            log.info(
+                "cache_hit_serving",
+                similarity=round(similarity, 4),
+                cached_question_preview=cached_question[:80],
+                cache_lookup_ms=round(cache_lookup_ms, 1),
+            )
+
+            # Publish metadata with cache_hit=True.
+            # The SSE client uses this flag to show the cache-hit badge.
+            await _publish_event(
+                redis_client,
+                channel,
+                "metadata",
+                json.dumps({
+                    "cache_hit": True,
+                    "similarity": round(similarity, 4),
+                    "cached_question": cached_question,
+                    "embed_ms": round(embed_ms, 1),
+                    "cache_lookup_ms": round(cache_lookup_ms, 1),
+                    # These fields are None on a cache hit — no retrieval ran.
+                    "docs_retrieved": None,
+                    "documents": [],
+                    "retrieve_ms": None,
+                }),
+            )
+
+            # Replay the cached answer as a token stream.
+            # Split on whitespace, re-add the space suffix that was present
+            # in the original stream (each token was published with its
+            # trailing space intact from Gemini's output).
+            # The client cannot distinguish a replay from live generation.
+            words = cached_answer.split(" ")
+            for i, word in enumerate(words):
+                token = word if i == len(words) - 1 else word + " "
+                if token:
+                    await _publish_event(redis_client, channel, "token", token)
+
+            total_ms = (time.perf_counter() - t_start) * 1000
+            log.info(
+                "job_cache_hit_complete",
+                embed_ms=round(embed_ms, 1),
+                cache_lookup_ms=round(cache_lookup_ms, 1),
+                total_ms=round(total_ms, 1),
+            )
+
+            await redis_client.set(f"job:{job_id}:status", "done", ex=JOB_TTL)
+            await _publish_event(redis_client, channel, "done", "[DONE]")
+            return  # ← Early return. Stages 3–6 do not run.
+
+        # ── Cache miss: continue with full pipeline ───────────────────────────
+
+        log.info(
+            "cache_miss",
+            cache_lookup_ms=round(cache_lookup_ms, 1),
+            threshold=cache_threshold,
+        )
+
+        # ── Stage 3: Retrieve ─────────────────────────────────────────────────
         t1 = time.perf_counter()
         async with pool.acquire() as conn:
             results = await retrieve_docs(
@@ -330,45 +405,46 @@ async def _process_job(
                 }),
             )
             await redis_client.set(f"job:{job_id}:status", "done", ex=JOB_TTL)
+            # Guardrail responses are NOT written to the cache.
+            # Caching "I don't know" would cause future semantically similar
+            # questions — which might actually be answerable after the knowledge
+            # base is updated — to receive stale "I don't know" answers.
             return
 
-        # ── Stage 3: Build prompt ─────────────────────────────────────────────
+        # ── Stage 4: Build prompt ─────────────────────────────────────────────
         docs_text = "\n\n".join(
             f"[{i}] {content}" for i, (content, _) in enumerate(results, 1)
         )
         messages = RAG_PROMPT.format_messages(context=docs_text, question=question)
 
-        # Publish metadata before generation begins.
+        # Publish metadata — cache_hit=False signals a live generation.
         await _publish_event(
             redis_client,
             channel,
             "metadata",
             json.dumps({
+                "cache_hit": False,
                 "docs_retrieved": len(results),
                 "documents": [
                     {"content": content[:200], "similarity": round(score, 4)}
                     for content, score in results
                 ],
                 "embed_ms": round(embed_ms, 1),
+                "cache_lookup_ms": round(cache_lookup_ms, 1),
                 "retrieve_ms": round(retrieve_ms, 1),
             }),
         )
 
-        # ── Stage 4: Stream generation ────────────────────────────────────────
+        # ── Stage 5: Stream generation ────────────────────────────────────────
         llm = get_llm(streaming=False)
         t2 = time.perf_counter()
         token_count = 0
+        answer_tokens: list[str] = []  # Accumulate for cache write.
 
         async for chunk in llm.astream(messages):
             if chunk.content:
                 token_count += 1
-                # PUBLISH is fire-and-forget in terms of delivery guarantee:
-                # if no subscribers are listening (SSE client disconnected),
-                # the message is simply not delivered. This is correct behaviour —
-                # the worker continues generating regardless of whether the client
-                # is connected. Results are not buffered or re-sent on reconnect.
-                # (Week 4 semantic cache provides a re-queryable result for
-                # cache hits, but not a full replay of the token stream.)
+                answer_tokens.append(chunk.content)
                 await _publish_event(redis_client, channel, "token", chunk.content)
 
         generation_ms = (time.perf_counter() - t2) * 1000
@@ -377,6 +453,7 @@ async def _process_job(
         log.info(
             "job_processing_complete",
             embed_ms=round(embed_ms, 1),
+            cache_lookup_ms=round(cache_lookup_ms, 1),
             retrieve_ms=round(retrieve_ms, 1),
             generation_ms=round(generation_ms, 1),
             total_ms=round(total_ms, 1),
@@ -385,6 +462,26 @@ async def _process_job(
 
         await redis_client.set(f"job:{job_id}:status", "done", ex=JOB_TTL)
         await _publish_event(redis_client, channel, "done", "[DONE]")
+
+        # ── Stage 6: Write to cache ───────────────────────────────────────────
+        # Runs AFTER publishing done — the client sees the complete answer
+        # before the cache write happens. Cache write latency does not affect
+        # the user's perceived response time.
+        if answer_tokens:
+            full_answer = "".join(answer_tokens)
+            try:
+                async with pool.acquire() as conn:
+                    await write_cache_entry(conn, question, full_answer, embedding)
+            except Exception as cache_exc:
+                # Cache write failure is non-fatal.
+                # The client already received the answer. Log the error and
+                # continue — the next request for this question will be a
+                # cache miss and run the full pipeline again. Acceptable.
+                log.warning(
+                    "cache_write_failed",
+                    error=str(cache_exc),
+                    note="Non-fatal. Next request for this question will be a cache miss.",
+                )
 
     except Exception as exc:
         log.error("job_processing_failed", error=str(exc), exc_info=True)
@@ -401,14 +498,9 @@ async def _process_job(
         )
 
     finally:
-        # XACK: acknowledge the message, removing it from the pending entries list.
-        # This must run regardless of success or failure.
-        # Without XACK: the message stays in the PEL indefinitely and will be
-        # reclaimed on the next worker startup, causing duplicate processing.
         await redis_client.xack(STREAM_KEY, GROUP_NAME, message_id)
         log.info("message_acknowledged", message_id=message_id)
         structlog.contextvars.clear_contextvars()
-
 
 # ── Main polling loop ─────────────────────────────────────────────────────────
 
