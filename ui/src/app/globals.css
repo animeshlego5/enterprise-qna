@@ -1,3 +1,52 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+
+@theme {
+  /* Claude light-mode color palette */
+  --color-claude-bg:         #faf9f5;
+  --color-claude-surface:    #ffffff;
+  --color-claude-surface2:   #f5f2ec;
+  --color-claude-border:     #e5e0d8;
+  --color-claude-border-hi:  #d0c9bf;
+  --color-claude-text:       #1a1614;
+  --color-claude-muted:      #6b6360;
+  --color-claude-subtle:     #a09890;
+  --color-claude-accent:     #da7756;
+  --color-claude-accent-dim: #c26040;
+  --color-claude-success:    #1e8a57;
+  --color-claude-info:       #2d6fa3;
+
+  /* Fonts — consume the CSS vars injected by next/font */
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+
+  /* Blinking cursor animation used on the streaming indicator */
+  --animate-cursor-blink: cursor-blink 1s step-end infinite;
+
+  @keyframes cursor-blink {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: 0; }
+  }
+}
+
+@layer base {
+  *, *::before, *::after {
+    border-color: var(--color-claude-border);
+  }
+
+  html {
+    background-color: var(--color-claude-bg);
+    color: var(--color-claude-text);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  ::selection {
+    background-color: var(--color-claude-accent);
+    color: #fff;
+  }
+
+  ::-webkit-scrollbar        { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track  { background: transparent; }
+  ::-webkit-scrollbar-thumb  { background: var(--color-claude-border); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--color-claude-border-hi); }
+}

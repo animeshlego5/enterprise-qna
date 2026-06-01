@@ -66,6 +66,42 @@ export type SSEEvent =
 
 const API_BASE = "";  // Empty string: all requests go through Next.js rewrites.
 
+// ── Ingest / document management ─────────────────────────────────────────────
+
+export interface IngestResponse {
+  filename: string;
+  pages_read: number;
+  chunks_stored: number;
+}
+
+export interface DocumentInfo {
+  source: string;
+  chunk_count: number;
+}
+
+export async function uploadPdf(file: File): Promise<IngestResponse> {
+  const body = new FormData();
+  body.append("file", file);
+
+  const response = await fetch(`${API_BASE}/api/ingest`, {
+    method: "POST",
+    body,
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.detail ?? `Upload failed: HTTP ${response.status}`);
+  }
+
+  return response.json();
+}
+
+export async function listDocuments(): Promise<DocumentInfo[]> {
+  const response = await fetch(`${API_BASE}/api/documents`);
+  if (!response.ok) throw new Error(`Failed to load documents: HTTP ${response.status}`);
+  return response.json();
+}
+
 export async function submitQuery(
   request: QueryRequest
 ): Promise<JobSubmitResponse> {

@@ -17,7 +17,6 @@ export function QueryForm() {
   const handleSubmit = async () => {
     if (!question.trim() || isStreaming) return;
 
-    // Reset state for new query.
     setTokens([]);
     setMetadata(null);
     setIsComplete(false);
@@ -27,11 +26,9 @@ export function QueryForm() {
     abortRef.current = false;
 
     try {
-      // Step 1: Submit the job.
       const job = await submitQuery({ question });
       setJobId(job.job_id);
 
-      // Step 2: Open the SSE stream.
       for await (const event of streamAnswer(job.job_id)) {
         if (abortRef.current) break;
 
@@ -76,33 +73,56 @@ export function QueryForm() {
   };
 
   return (
-    <div className="w-full max-w-2xl">
-      {/* Input area */}
-      <div className="relative">
-        <textarea
-          value={question}
-          onChange={(e) => setQuestion(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder="Ask a question about the enterprise knowledge base..."
-          rows={3}
-          disabled={isStreaming}
-          className="w-full resize-none rounded-xl border border-zinc-700 bg-zinc-800 px-4 py-3 pr-24 text-sm text-zinc-100 placeholder-zinc-500 focus:border-zinc-500 focus:outline-none focus:ring-1 focus:ring-zinc-500 disabled:opacity-50"
-        />
-        <button
-          onClick={handleSubmit}
-          disabled={!question.trim() || isStreaming}
-          className="absolute bottom-3 right-3 rounded-lg bg-zinc-100 px-3 py-1.5 text-xs font-semibold text-zinc-900 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          {isStreaming ? "…" : "Ask"}
-        </button>
-      </div>
+    <div className="w-full max-w-3xl">
+      {/* Input area — Claude-style rounded input card */}
+      <div className="rounded-2xl border border-claude-border bg-claude-surface shadow-lg shadow-black/20 transition-shadow focus-within:border-claude-border-hi focus-within:shadow-xl focus-within:shadow-black/30">
+        {/* Textarea row — button is scoped inside here so it doesn't overlap the hint bar */}
+        <div className="relative">
+          <textarea
+            value={question}
+            onChange={(e) => setQuestion(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="Ask a question about the enterprise knowledge base…"
+            rows={4}
+            disabled={isStreaming}
+            className="w-full resize-none rounded-t-2xl bg-transparent px-6 py-5 pr-20 text-base leading-relaxed text-claude-text placeholder-claude-subtle focus:outline-none disabled:opacity-60"
+          />
 
-      {/* Job ID (dev info) */}
-      {jobId && (
-        <p className="mt-1 font-mono text-xs text-zinc-600">
-          job: {jobId}
-        </p>
-      )}
+          {/* Submit button — positioned inside the textarea section only */}
+          <button
+            onClick={handleSubmit}
+            disabled={!question.trim() || isStreaming}
+            aria-label="Submit question"
+            className="absolute bottom-4 right-4 flex h-10 w-10 items-center justify-center rounded-xl bg-claude-accent text-white transition-all hover:bg-claude-accent-dim disabled:cursor-not-allowed disabled:opacity-30 disabled:bg-claude-muted"
+          >
+            {isStreaming ? (
+              <span className="flex gap-1">
+                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-white [animation-delay:0ms]" />
+                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-white [animation-delay:150ms]" />
+                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-white [animation-delay:300ms]" />
+              </span>
+            ) : (
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M8 14V2M2 8l6-6 6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            )}
+          </button>
+        </div>
+
+        {/* Hint bar */}
+        <div className="flex items-center justify-between border-t border-claude-border px-5 py-2.5">
+          <span className="text-sm text-claude-subtle">
+            Press <kbd className="rounded bg-claude-surface2 px-1.5 py-0.5 font-mono text-xs text-claude-muted">Enter</kbd> to send
+            &nbsp;·&nbsp;
+            <kbd className="rounded bg-claude-surface2 px-1.5 py-0.5 font-mono text-xs text-claude-muted">Shift+Enter</kbd> for newline
+          </span>
+          {jobId && (
+            <span className="font-mono text-xs text-claude-subtle">
+              job: {jobId.slice(0, 8)}…
+            </span>
+          )}
+        </div>
+      </div>
 
       {/* Answer + metadata */}
       <AnswerStream
