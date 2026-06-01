@@ -87,3 +87,84 @@ async def retrieve_docs(
     )
 
     return results
+
+
+async def retrieve_cached_answer(
+    conn: asyncpg.Connection,
+    embedding: list[float],
+    threshold: float = 0.92,
+    top_k: int = 3,
+) -> tuple[str, str, float] | None:
+    """
+    Look up a previously answered question in the semantic cache.
+
+    Performs a cosine similarity search against all cached question embeddings.
+    Returns the best match if its similarity score exceeds the threshold.
+
+    Returns:
+        (question, answer, similarity) if a match is found above threshold.
+        None if no match is found.
+
+    Args:
+        conn:       asyncpg connection.
+        embedding:  L2-normalized query embedding (384-dim for all-MiniLM-L6-v2).
+        threshold:  Minimum cosine similarity to count as a hit (default: 0.92).
+        top_k:      Number of nearest neighbours to retrieve before filtering
+                    by threshold. We take the best match among top_k candidates.
+
+    The query uses 1 - (embedding <=> $1) to convert cosine distance to cosine
+    similarity. pgvector's <=> operator returns cosine distance (0 = identical,
+    2 = opposite). We want similarity (1 = identical, -1 = opposite), so we
+    subtract from 1.
+
+    ORDER BY ... LIMIT top_k: fetches the top-k nearest neighbours.
+    The Python-side filter (similarity >= threshold) then rejects any that are
+    above the distance floor but below our semantic threshold. This two-stage
+    approach is more readable and debuggable than embedding the threshold
+    directly into the SQL WHERE clause — it also lets the IVFFlat index do its
+    job (approximate scan) without a full table scan for threshold filtering.
+
+    hit_count increment:
+        On a hit, the matching row's hit_count is incremented atomically.
+        This is done in a second query rather than inside the SELECT because
+        we do not want to mutate the table until we are certain the threshold
+        check passes in Python. A subquery UPDATE inside the SELECT could
+        increment hit_count even for rows that fail the threshold test.
+    """
+    rows = await conn.fetch(
+        """
+        SELECT
+            id,
+            question,
+            answer,
+            1 - (embedding <=> $1::vector) AS similarity
+        FROM semantic_cache
+        ORDER BY embedding <=> $1::vector
+        LIMIT $2
+        """,
+        embedding,
+        top_k,
+    )
+
+    if not rows:
+        return None
+
+    # Find the best match above threshold.
+    best = max(rows, key=lambda r: r["similarity"])
+    if best["similarity"] < threshold:
+        return None
+
+    # Increment hit_count for this entry.
+    await conn.execute(
+        "UPDATE semantic_cache SET hit_count = hit_count + 1 WHERE id = $1",
+        best["id"],
+    )
+
+    log.info(
+        "cache_hit",
+        cache_id=best["id"],
+        similarity=round(best["similarity"], 4),
+        question_preview=best["question"][:80],
+    )
+
+    return best["question"], best["answer"], best["similarity"]
