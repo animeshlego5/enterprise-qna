@@ -53,8 +53,10 @@ from pipeline.cache import write_cache_entry
 from pipeline.retrieval import retrieve_docs, retrieve_cached_answer
 
 import asyncio
+import hashlib
 import json
 import os
+import signal
 import time
 from typing import Any
 
@@ -89,6 +91,24 @@ TOP_K = int(os.getenv("TOP_K_RESULTS", "3"))
 # KeyboardInterrupt between polls). A longer value reduces CPU usage but
 # increases shutdown delay.
 BLOCK_MS = 5000
+
+# ── Graceful shutdown ─────────────────────────────────────────────────────────
+# Set to True when SIGTERM or SIGINT is received. The poll loop checks this flag
+# between XREADGROUP calls and exits cleanly after the current job completes.
+# Docker sends SIGTERM on `docker compose down` / `docker stop`. Without an
+# explicit handler, SIGTERM kills the process immediately (unlike SIGINT which
+# raises KeyboardInterrupt in Python). With this handler the worker finishes
+# its current job before stopping — no jobs left in the PEL mid-generation.
+_shutdown_requested = False
+
+
+def _handle_signal(signum: int, frame: object) -> None:
+    global _shutdown_requested
+    _shutdown_requested = True
+
+
+signal.signal(signal.SIGTERM, _handle_signal)
+signal.signal(signal.SIGINT, _handle_signal)
 
 
 # ── Resource initialization ───────────────────────────────────────────────────
@@ -292,6 +312,13 @@ async def _process_job(
     await redis_client.set(f"job:{job_id}:status", "processing", ex=JOB_TTL)
 
     t_start = time.perf_counter()
+    lock_acquired: bool = False
+    # Lock coordinates: SHA-256 of the question text (first 16 hex chars) so
+    # the key is deterministic across workers and fits comfortably in Redis.
+    question_hash = hashlib.sha256(question.encode()).hexdigest()[:16]
+    lock_key = f"lock:cache:{question_hash}"
+    lock_value = CONSUMER_NAME  # Unique per worker container.
+    lock_ttl_ms = 30_000        # 30s — must exceed worst-case pipeline time.
 
     try:
         # ── Stage 1: Embed ────────────────────────────────────────────────────
@@ -303,7 +330,52 @@ async def _process_job(
         embed_ms = (time.perf_counter() - t0) * 1000
         log.info("stage_embed_complete", latency_ms=round(embed_ms, 1))
 
-        # ── Stage 2: Semantic cache lookup ────────────────────────────────────
+        # ── Stage 2: Distributed lock + semantic cache lookup ─────────────────
+        # Atomic SET NX PX: only one worker can hold the lock per question.
+        # Prevents two concurrent workers from both missing the cache and
+        # calling the LLM twice for the same question.
+        lock_acquired = bool(await redis_client.set(
+            lock_key, lock_value, nx=True, px=lock_ttl_ms,
+        ))
+
+        if not lock_acquired:
+            # Another worker is processing this question right now. Wait briefly,
+            # then re-check the cache — it should be populated by then.
+            log.info("lock_contended", lock_key=lock_key)
+            await asyncio.sleep(0.1)
+            t_retry = time.perf_counter()
+            async with pool.acquire() as conn:
+                cache_result = await retrieve_cached_answer(
+                    conn, embedding, threshold=cache_threshold, top_k=cache_top_k,
+                )
+            cache_lookup_ms = (time.perf_counter() - t_retry) * 1000
+            if cache_result is not None:
+                cached_question, cached_answer, similarity = cache_result
+                log.info("lock_contended_cache_hit", similarity=round(similarity, 4))
+                await _publish_event(redis_client, channel, "metadata", json.dumps({
+                    "cache_hit": True,
+                    "similarity": round(similarity, 4),
+                    "cached_question": cached_question,
+                    "embed_ms": round(embed_ms, 1),
+                    "cache_lookup_ms": round(cache_lookup_ms, 1),
+                    "docs_retrieved": None,
+                    "documents": [],
+                    "retrieve_ms": None,
+                }))
+                words = cached_answer.split(" ")
+                for i, word in enumerate(words):
+                    token = word if i == len(words) - 1 else word + " "
+                    if token:
+                        await _publish_event(redis_client, channel, "token", token)
+                total_ms = (time.perf_counter() - t_start) * 1000
+                log.info("job_cache_hit_complete", total_ms=round(total_ms, 1))
+                await redis_client.set(f"job:{job_id}:status", "done", ex=JOB_TTL)
+                await _publish_event(redis_client, channel, "done", "[DONE]")
+                return
+            # Still a miss after waiting — other worker hit guardrail or errored.
+            # Fall through to run the full pipeline without holding the lock.
+            log.info("lock_contended_still_miss")
+
         t_cache = time.perf_counter()
         async with pool.acquire() as conn:
             cache_result = await retrieve_cached_answer(
@@ -325,8 +397,6 @@ async def _process_job(
                 cache_lookup_ms=round(cache_lookup_ms, 1),
             )
 
-            # Publish metadata with cache_hit=True.
-            # The SSE client uses this flag to show the cache-hit badge.
             await _publish_event(
                 redis_client,
                 channel,
@@ -337,18 +407,12 @@ async def _process_job(
                     "cached_question": cached_question,
                     "embed_ms": round(embed_ms, 1),
                     "cache_lookup_ms": round(cache_lookup_ms, 1),
-                    # These fields are None on a cache hit — no retrieval ran.
                     "docs_retrieved": None,
                     "documents": [],
                     "retrieve_ms": None,
                 }),
             )
 
-            # Replay the cached answer as a token stream.
-            # Split on whitespace, re-add the space suffix that was present
-            # in the original stream (each token was published with its
-            # trailing space intact from Gemini's output).
-            # The client cannot distinguish a replay from live generation.
             words = cached_answer.split(" ")
             for i, word in enumerate(words):
                 token = word if i == len(words) - 1 else word + " "
@@ -498,6 +562,15 @@ async def _process_job(
         )
 
     finally:
+        # Release the distributed lock only if we acquired it and still own it.
+        if lock_acquired:
+            current_holder = await redis_client.get(lock_key)
+            if current_holder == lock_value:
+                await redis_client.delete(lock_key)
+                log.info("lock_released", lock_key=lock_key)
+            else:
+                log.warning("lock_expired_before_release", lock_key=lock_key)
+
         await redis_client.xack(STREAM_KEY, GROUP_NAME, message_id)
         log.info("message_acknowledged", message_id=message_id)
         structlog.contextvars.clear_contextvars()
@@ -535,7 +608,7 @@ async def _run_worker(
         consumer=CONSUMER_NAME,
     )
 
-    while True:
+    while not _shutdown_requested:
         try:
             # XREADGROUP returns: [(stream_key, [(message_id, fields), ...])]
             # or None if the block timeout expires with no messages.
@@ -556,6 +629,16 @@ async def _run_worker(
             # With COUNT=1 and one stream, there is exactly one message.
             for _stream_name, stream_messages in response:
                 for message_id, fields in stream_messages:
+                    if _shutdown_requested:
+                        # SIGTERM arrived while we were blocked in XREADGROUP.
+                        # Leave the message in the PEL — another worker or the
+                        # next restart will reclaim it via _reclaim_pending_messages.
+                        log.info(
+                            "worker_shutdown_before_job",
+                            message_id=message_id,
+                            note="Job left in PEL for redelivery.",
+                        )
+                        return
                     log.info(
                         "message_received",
                         message_id=message_id,
@@ -574,16 +657,14 @@ async def _run_worker(
             break
 
         except aioredis.RedisError as exc:
-            # Redis connection error during polling. Log and continue —
-            # the connection pool will attempt reconnection on the next call.
             log.error("redis_error_in_poll_loop", error=str(exc))
             await asyncio.sleep(2)
 
         except asyncpg.PostgresError as exc:
-            # Database error not caught inside _process_job (should not happen,
-            # but defensive). Log and continue.
             log.error("db_error_in_poll_loop", error=str(exc))
             await asyncio.sleep(2)
+
+    log.info("worker_poll_loop_exited", shutdown_requested=_shutdown_requested)
 
 
 async def main() -> None:

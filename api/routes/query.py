@@ -36,6 +36,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from api.dependencies import get_pool, get_redis
 from api.models import JobSubmitResponse, JobStatus, QueryRequest
+from api.routes.metrics import JOBS_SUBMITTED, SSE_CONNECTIONS
 
 log = structlog.get_logger(__name__)
 
@@ -120,6 +121,7 @@ async def submit_query(
     )
 
     log.info("job_submitted", stream_key=stream_key)
+    JOBS_SUBMITTED.inc()
     structlog.contextvars.clear_contextvars()
 
     return JobSubmitResponse(
@@ -269,6 +271,7 @@ async def stream_job_result(
         )
 
     log.info("sse_stream_opening", job_id=job_id, current_status=status_val)
+    SSE_CONNECTIONS.inc()
 
     return EventSourceResponse(
         _job_sse_generator(job_id=job_id, redis_client=redis_client),

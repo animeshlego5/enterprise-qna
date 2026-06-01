@@ -31,7 +31,7 @@ configure_logging()
 
 log = structlog.get_logger(__name__)
 
-from api.routes import health, query as query_router
+from api.routes import health, query as query_router, metrics as metrics_router
 
 load_dotenv()
 
@@ -145,6 +145,7 @@ def create_app() -> FastAPI:
 
     app.include_router(health.router, tags=["Health"])
     app.include_router(query_router.router, prefix="/api", tags=["Query"])
+    app.include_router(metrics_router.router, tags=["Observability"])
 
     return app
 

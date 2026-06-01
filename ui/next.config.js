@@ -1,15 +1,18 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // Required for the multi-stage Docker build.
+  // Generates .next/standalone/ with a self-contained server.js that runs
+  // without the full Next.js package installed in the final image.
+  output: "standalone",
+
   async rewrites() {
     return [
       {
         // Proxy /api/* to the FastAPI backend.
-        // In development: FastAPI runs on :8000, Next.js on :3000.
-        // This avoids CORS issues entirely — the browser sees all requests
-        // going to the same origin (:3000), and Next.js proxies them to :8000.
-        // In production: update the destination to your deployed FastAPI URL.
+        // Development: API_URL is unset → defaults to http://localhost:8000.
+        // Docker:      API_URL=http://api:8000 (set in docker-compose.yml).
         source: "/api/:path*",
-        destination: "http://localhost:8000/api/:path*",
+        destination: `${process.env.API_URL ?? "http://localhost:8000"}/api/:path*`,
       },
     ];
   },
