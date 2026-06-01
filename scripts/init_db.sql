@@ -15,10 +15,11 @@ CREATE TABLE IF NOT EXISTS enterprise_docs (
 -- Created now so Week 4 has no migration to run.
 CREATE TABLE IF NOT EXISTS semantic_cache (
     id              SERIAL PRIMARY KEY,
-    query_text      TEXT        NOT NULL,
-    query_embedding vector(384),
+    question        TEXT        NOT NULL,
     answer          TEXT        NOT NULL,
-    created_at      TIMESTAMPTZ DEFAULT NOW()
+    embedding       vector(384),
+    created_at      TIMESTAMPTZ DEFAULT NOW(),
+    hit_count       INT         DEFAULT 0
 );
 
 -- NOTE: No ivfflat index is created here. See the explanation below.
