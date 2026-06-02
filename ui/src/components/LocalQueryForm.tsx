@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { loadEmbedder, embedTexts, getEmbedderStatus } from "@/lib/localEmbedder";
-import { searchChunks, totalChunks, SearchResult } from "@/lib/localDb";
+import { searchChunks, SearchResult } from "@/lib/localDb";
 import { streamLocalLlm } from "@/lib/localLlm";
 import type { LocalSettings } from "@/lib/appMode";
 
@@ -19,13 +19,7 @@ export function LocalQueryForm({ settings }: { settings: LocalSettings }) {
   const [state, setState] = useState<QueryState>({ kind: "idle" });
   const [tokens, setTokens] = useState<string[]>([]);
   const [results, setResults] = useState<SearchResult[]>([]);
-  const [dbSize, setDbSize] = useState(0);
   const abortRef = useRef(false);
-
-  // Keep dbSize fresh so we can show "upload documents first"
-  useEffect(() => {
-    totalChunks().then(setDbSize).catch(() => {});
-  }, []);
 
   // Pre-warm the model whenever settings change (provider is still local)
   useEffect(() => {
@@ -63,7 +57,8 @@ export function LocalQueryForm({ settings }: { settings: LocalSettings }) {
       setResults(hits);
 
       if (hits.length === 0) {
-        setState({ kind: "error", message: dbSize === 0 ? "Your local knowledge base is empty — upload a PDF first." : "No relevant documents found for this question." });
+        // searchChunks returns [] only when the DB is empty (no threshold filter)
+        setState({ kind: "error", message: "Your local knowledge base is empty — upload a PDF first." });
         return;
       }
 
@@ -86,7 +81,7 @@ export function LocalQueryForm({ settings }: { settings: LocalSettings }) {
     } catch (err) {
       setState({ kind: "error", message: err instanceof Error ? err.message : "Unexpected error." });
     }
-  }, [question, state.kind, settings, dbSize]);
+  }, [question, state.kind, settings]);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSubmit(); }

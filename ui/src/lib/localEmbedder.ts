@@ -10,6 +10,7 @@ let _loadPromise: Promise<unknown> | null = null;
 let _status: EmbedderStatus = "idle";
 
 const MODEL = "Xenova/all-MiniLM-L6-v2";
+const DIM = 384;
 
 export function getEmbedderStatus(): EmbedderStatus {
   return _status;
@@ -21,7 +22,6 @@ export async function loadEmbedder(onProgress?: ProgressCb): Promise<void> {
 
   _status = "loading";
   _loadPromise = (async () => {
-    // Dynamic import keeps transformers.js out of the server bundle entirely.
     const { pipeline, env } = await import("@huggingface/transformers");
     env.allowLocalModels = false;
     env.useBrowserCache = true;
@@ -45,17 +45,19 @@ export async function loadEmbedder(onProgress?: ProgressCb): Promise<void> {
 
 export async function embedTexts(texts: string[]): Promise<number[][]> {
   if (!_pipeline) await loadEmbedder();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const pipe = _pipeline as any;
 
-  const pipe = _pipeline as (
-    input: string[],
-    opts: { pooling: string; normalize: boolean }
-  ) => Promise<{ data: Float32Array; dims: number[] }>;
-
-  const output = await pipe(texts, { pooling: "mean", normalize: true });
-  const dim = output.dims[output.dims.length - 1]; // 384
-  const result: number[][] = [];
-  for (let i = 0; i < texts.length; i++) {
-    result.push(Array.from(output.data.slice(i * dim, (i + 1) * dim)));
+  // Embed one text at a time — avoids batch dimension ambiguity in
+  // @huggingface/transformers v4 (array input may return array of Tensors
+  // rather than a single batched Tensor, breaking the offset math below).
+  const results: number[][] = [];
+  for (const text of texts) {
+    const out = await pipe(text, { pooling: "mean", normalize: true });
+    // out is a Tensor; .data is Float32Array, .dims is [1, DIM] or [DIM]
+    const raw = out.data as Float32Array;
+    // Always take the first DIM floats — safe for both shape variants
+    results.push(Array.from(raw.slice(0, DIM)));
   }
-  return result;
+  return results;
 }

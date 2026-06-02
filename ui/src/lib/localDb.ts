@@ -69,13 +69,15 @@ export async function addChunks(chunks: Omit<Chunk, "id">[]): Promise<void> {
 export async function searchChunks(
   queryEmbedding: number[],
   topK = 3,
-  threshold = 0.2
 ): Promise<SearchResult[]> {
   const db = await getDb();
   const all = await db.getAll("chunks");
+  if (all.length === 0) return [];
+  // No threshold — always return the top-k most similar chunks.
+  // The LLM will handle low-relevance context; hard thresholds cause
+  // false-empty results when the question phrasing diverges from the doc.
   return all
     .map((c) => ({ text: c.text, source: c.source, page: c.page, score: dot(queryEmbedding, c.embedding) }))
-    .filter((r) => r.score >= threshold)
     .sort((a, b) => b.score - a.score)
     .slice(0, topK);
 }
