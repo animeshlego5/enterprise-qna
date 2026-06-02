@@ -11,55 +11,86 @@
 3. [Tech Stack](#3-tech-stack)
 4. [Project Structure](#4-project-structure)
 5. [Database Schema](#5-database-schema)
-6. [RAG Pipeline](#6-rag-pipeline)
-7. [Semantic Cache](#7-semantic-cache)
-8. [PDF Ingestion](#8-pdf-ingestion)
-9. [API Reference](#9-api-reference)
-10. [Frontend & UI System](#10-frontend--ui-system)
-11. [Configuration Reference](#11-configuration-reference)
-12. [Running Locally](#12-running-locally)
-13. [Docker Deployment](#13-docker-deployment)
-14. [Monetization & Tier Architecture](#14-monetization--tier-architecture)
-15. [Roadmap](#15-roadmap)
+6. [RAG Pipeline — Cloud Mode](#6-rag-pipeline--cloud-mode)
+7. [RAG Pipeline — Local Mode](#7-rag-pipeline--local-mode)
+8. [Semantic Cache](#8-semantic-cache)
+9. [PDF Ingestion](#9-pdf-ingestion)
+10. [API Reference](#10-api-reference)
+11. [Frontend & UI System](#11-frontend--ui-system)
+12. [Configuration Reference](#12-configuration-reference)
+13. [Setup Guide — What You Need to Do](#13-setup-guide--what-you-need-to-do)
+14. [Docker Deployment](#14-docker-deployment)
+15. [Monetization & Tier Architecture](#15-monetization--tier-architecture)
+16. [Roadmap](#16-roadmap)
 
 ---
 
 ## 1. Project Overview
 
-Enterprise QnA is a **Retrieval-Augmented Generation (RAG)** system that lets users ask natural language questions answered from a private document knowledge base. It is designed around two operating modes:
+Enterprise QnA is a **Retrieval-Augmented Generation (RAG)** system that lets users ask natural language questions answered from a private document knowledge base. Both operating modes are fully implemented:
 
 | Mode | Who it's for | Where processing happens | Cost to operator |
 |---|---|---|---|
-| **Local / Free** *(planned)* | Anyone with their own LLM API key | User's browser | $0 |
-| **Backend / Paid** *(current)* | Users who want zero setup | Server (FastAPI + worker) | Hosting + LLM tokens |
+| **Local / Free** | Anyone with their own LLM API key | User's browser | **$0** |
+| **Cloud / Paid** | Signed-in users (Clerk) | Server (FastAPI + worker) | Hosting + LLM tokens |
 
-The current codebase implements the **backend mode** in full. The local mode is the next major milestone (see [§15 Roadmap](#15-roadmap)).
+The app automatically selects the mode based on sign-in state. Signed-in users get the cloud backend; everyone else gets the local pipeline. Signed-in users can also override to local mode from the Settings panel.
 
-### What it does (backend mode)
+### Local mode — what it does
 
-1. User uploads a PDF → it is chunked, embedded, and stored in a pgvector database.
-2. User asks a question → the question is embedded and the most semantically similar chunks are retrieved.
-3. Retrieved chunks are injected into a prompt sent to Google Gemini.
-4. The answer streams token-by-token back to the browser via Server-Sent Events.
-5. The Q&A pair is cached semantically so identical (or near-identical) future questions are served from cache without an LLM call.
+1. User uploads a PDF → text is extracted in the browser (pdfjs-dist), chunked, and embedded using `all-MiniLM-L6-v2` running as ONNX directly in the browser (`@huggingface/transformers`).
+2. Embeddings and text are stored in the browser's IndexedDB — nothing leaves the device.
+3. User asks a question → the question is embedded in the browser, cosine similarity search finds relevant chunks in IndexedDB.
+4. The matched chunks are sent as context to the user's own LLM API (OpenAI, Gemini, or Anthropic).
+5. The answer streams token-by-token into the UI.
+
+### Cloud mode — what it does
+
+1. User signs in via Clerk (Google, GitHub, or email).
+2. User uploads a PDF → it is chunked, embedded, and stored in a pgvector database on the server.
+3. User asks a question → the Clerk session token is forwarded with the request; the server validates it.
+4. The RAG pipeline runs on the server: embed → semantic cache → vector search → Gemini → stream.
+5. The answer streams token-by-token via Server-Sent Events.
 
 ---
 
 ## 2. Architecture
 
-### 2.1 Current — Server-Side (Backend Mode)
+### 2.1 Local / Free Mode (browser-side RAG)
+
+```
+User's Browser — nothing leaves the device
+│
+├── pdfjs-dist (CDN worker)
+│   └── Extract text page by page from PDF
+│
+├── @huggingface/transformers (ONNX, lazy download ~25 MB)
+│   └── Embed chunks + query → 384-dim Float32Array
+│
+├── IndexedDB (via idb)
+│   └── Store {text, embedding, source, page} per chunk
+│   └── Brute-force cosine similarity search at query time
+│
+└── fetch() → User's own LLM API key
+    ├── OpenAI  /v1/chat/completions  (stream: true)
+    ├── Gemini  /v1beta/models/:model:streamGenerateContent
+    └── Anthropic /v1/messages (anthropic-dangerous-direct-browser-access: true)
+```
+
+### 2.2 Cloud / Paid Mode (server-side RAG)
 
 ```
 Browser (Next.js UI)
 │
-│  POST /api/query          (HTTP 202)
+│  Clerk session token → Authorization: Bearer <jwt>
+│  POST /api/query          (HTTP 202, requires auth if CLERK_JWKS_URL set)
 │  GET  /api/query/:id/stream  (SSE)
-│  POST /api/ingest         (multipart upload)
+│  POST /api/ingest         (multipart upload, requires auth if CLERK_JWKS_URL set)
 │  GET  /api/documents
 │
 ▼
 FastAPI (api/)
-│  ├── validates request
+│  ├── verify_backend_access() — validates Clerk RS256 JWT via PyJWT + JWKS
 │  ├── generates job_id
 │  ├── writes job:{id}:status to Redis
 │  └── XADD → Redis Stream "jobs"
@@ -71,67 +102,31 @@ Redis Streams ──────────────────────
                                                                         │
                                                              ┌──────────▼──────────┐
                                                              │  1. embed question   │
-                                                             │  2. check cache      │
+                                                             │  2. check sem.cache  │
                                                              │  3. retrieve docs    │
                                                              │  4. build prompt     │
-                                                             │  5. stream to LLM    │
+                                                             │  5. stream to Gemini │
                                                              │  6. PUBLISH tokens   │
                                                              │  7. write cache      │
                                                              └──────────┬──────────┘
                                                                         │
-                                                              Redis pub/sub channel
-                                                              job:{id}
+                                                              Redis pub/sub  job:{id}
                                                                         │
 FastAPI SSE endpoint subscribes ◄───────────────────────────────────────┘
         │
-        └── token-by-token → Browser (EventSource)
+        └── token-by-token → Browser
 ```
 
-**Why the async job queue pattern?**
-The API process returns in ~8ms. The LLM call takes 2–10s. Decoupling them means:
-- The HTTP request/response cycle is instant.
-- Multiple workers can run concurrently, scaling horizontally by adding containers.
-- If the SSE connection drops, the job continues. The client can reconnect.
+### 2.3 Mode detection in the browser
 
-### 2.2 Planned — Hybrid (Local + Backend)
+`AppShell` (client component) checks Clerk's `isSignedIn`:
 
 ```
- ┌─────────────────────────────────────────────────────┐
- │                  User's Browser                     │
- │                                                     │
- │  ┌───────────────────┐   ┌──────────────────────┐  │
- │  │  Has backend token │   │  Has own LLM API key │  │
- │  │  (paid tier)       │   │  (free / local tier)  │  │
- │  └────────┬──────────┘   └──────────┬───────────┘  │
- │           │ fetch /api/*             │               │
- │           │                         ▼               │
- │           │              ┌──────────────────────┐   │
- │           │              │  Transformers.js      │   │
- │           │              │  (ONNX WebWorker)     │   │
- │           │              │  Embed chunks & query │   │
- │           │              └──────────┬───────────┘   │
- │           │                         │               │
- │           │              ┌──────────▼───────────┐   │
- │           │              │  IndexedDB            │   │
- │           │              │  {text, embedding,    │   │
- │           │              │   source, page}       │   │
- │           │              └──────────┬───────────┘   │
- │           │                         │               │
- │           │              ┌──────────▼───────────┐   │
- │           │              │  JS cosine similarity │   │
- │           │              │  top-k retrieval      │   │
- │           │              └──────────┬───────────┘   │
- │           │                         │               │
- │           │              ┌──────────▼───────────┐   │
- │           │              │  fetch(LLM API)       │   │
- │           │              │  OpenAI / Gemini key  │   │
- │           │              └──────────┬───────────┘   │
- │           │                         │               │
- └───────────┼─────────────────────────┼───────────────┘
-             │                         │
-             ▼                         ▼
-     FastAPI backend             Streamed answer
-     (paid tier path)            rendered in UI
+isSignedIn === true AND forceLocal === false
+    → cloud mode: DocumentUpload + QueryForm (sends Bearer token)
+
+isSignedIn === false OR forceLocal === true
+    → local mode: LocalDocumentUpload + LocalQueryForm (uses API key from settings)
 ```
 
 ---
@@ -149,9 +144,10 @@ The API process returns in ~8ms. The LLM call takes 2–10s. Decoupling them mea
 | Vector extension | **pgvector** | Cosine similarity search (`<=>` operator) |
 | DB driver | **asyncpg** | Async PostgreSQL driver |
 | Embedding model | **all-MiniLM-L6-v2** | 384-dim sentence embeddings (Hugging Face) |
-| LLM | **Google Gemini 2.5 Flash** | Answer generation |
+| LLM | **Google Gemini 2.5 Flash** | Cloud-mode answer generation |
 | LLM framework | **LangChain** | Prompt templates, streaming |
-| PDF extraction | **pypdf 6.12** | Text extraction from uploaded PDFs |
+| PDF extraction | **pypdf 6.12** | Server-side text extraction from PDFs |
+| Auth | **PyJWT 2.13** | Clerk RS256 JWT verification via JWKS |
 | Structured logging | **structlog** | JSON-ready structured logs |
 | Metrics | **prometheus_client** | Prometheus exposition |
 | Validation | **Pydantic v2** | Request/response schemas |
@@ -159,18 +155,23 @@ The API process returns in ~8ms. The LLM call takes 2–10s. Decoupling them mea
 ### Frontend
 | Layer | Technology | Purpose |
 |---|---|---|
-| Framework | **Next.js 16** (App Router) | React SSR/SSG, `/api` rewrites as backend proxy |
-| Styling | **Tailwind CSS v4** | Utility-first, CSS-first `@theme` configuration |
+| Framework | **Next.js 16** (App Router, Turbopack) | React SSR/SSG, `/api` proxy rewrites |
+| Auth | **@clerk/nextjs 7** | Sign-in/out, session token, `useAuth` hook |
+| Styling | **Tailwind CSS v4** | CSS-first `@theme` color tokens |
 | Font | **Inter** (Google Fonts) | Claude-style humanist sans-serif |
 | Language | **TypeScript** | Type safety across all components |
+| Browser embeddings | **@huggingface/transformers 4** | ONNX `all-MiniLM-L6-v2` in browser |
+| Browser PDF | **pdfjs-dist 6** | Client-side PDF text extraction |
+| Browser vector store | **idb 8** | Typed IndexedDB wrapper for embeddings |
 
 ### Infrastructure
 | Concern | Tool |
 |---|---|
-| Containerisation | Docker (separate `Dockerfile.api`, `Dockerfile.worker`, `Dockerfile.ui`) |
+| Containerisation | Docker (`Dockerfile.api`, `Dockerfile.worker`, `Dockerfile.ui`) |
 | Orchestration | `docker-compose.yml` (API + 2 workers + UI) |
 | Managed Redis | Upstash (serverless Redis, TLS required) |
 | Managed Postgres | Neon (serverless Postgres, pgvector built-in) |
+| Auth provider | Clerk (free tier sufficient) |
 
 ---
 
@@ -179,57 +180,69 @@ The API process returns in ~8ms. The LLM call takes 2–10s. Decoupling them mea
 ```
 enterprise-qna/
 │
-├── api/                          # FastAPI application
-│   ├── main.py                   # App factory, lifespan, CORS, router registration
-│   ├── dependencies.py           # DI providers: pool, redis, embed_model
-│   ├── models.py                 # Pydantic schemas (request/response)
-│   ├── logging_config.py         # structlog setup (console/JSON toggle)
+├── api/                              # FastAPI application
+│   ├── main.py                       # App factory, lifespan, CORS, router registration
+│   ├── dependencies.py               # DI providers: pool, redis, verify_backend_access
+│   ├── models.py                     # Pydantic schemas (request/response)
+│   ├── logging_config.py             # structlog setup
 │   └── routes/
-│       ├── health.py             # GET /health — DB liveness check
-│       ├── query.py              # POST /api/query, GET /api/query/:id/stream
-│       ├── ingest.py             # POST /api/ingest, GET /api/documents
-│       └── metrics.py            # GET /metrics — Prometheus exposition
+│       ├── health.py                 # GET /health
+│       ├── query.py                  # POST /api/query, GET /api/query/:id/stream
+│       ├── ingest.py                 # POST /api/ingest, GET /api/documents
+│       └── metrics.py                # GET /metrics (Prometheus)
 │
-├── pipeline/                     # Pure async RAG pipeline (no FastAPI deps)
-│   ├── retrieval.py              # retrieve_docs(), retrieve_cached_answer()
-│   ├── cache.py                  # write_cache_entry(), distributed lock
-│   ├── llm.py                    # get_llm() — LangChain Gemini client
-│   ├── rag_prompt.py             # System + human prompt templates
-│   └── query.py                  # CLI entrypoint (Week 1/2 legacy)
+├── pipeline/                         # Pure async RAG pipeline (no FastAPI deps)
+│   ├── retrieval.py                  # retrieve_docs(), retrieve_cached_answer()
+│   ├── cache.py                      # write_cache_entry(), distributed lock
+│   ├── llm.py                        # get_llm() — LangChain Gemini client
+│   ├── rag_prompt.py                 # System + human prompt templates
+│   └── query.py                      # CLI entrypoint (legacy)
 │
 ├── workers/
-│   └── llm_worker.py             # Async worker: XREADGROUP → RAG → PUBLISH
+│   └── llm_worker.py                 # Async worker: XREADGROUP → RAG → PUBLISH
 │
-├── scripts/                      # One-off utility scripts
-│   ├── init_db.sql               # CREATE TABLE enterprise_docs, semantic_cache
-│   ├── seed_docs.py              # Seeds 6 sample enterprise documents
-│   ├── apply_schema.py           # Runs init_db.sql against Neon
-│   ├── check_connection.py       # Verifies DB connectivity
-│   ├── check_redis.py            # Verifies Redis connectivity
-│   ├── clear_cache.py            # Truncates semantic_cache table
-│   └── create_index.py           # Creates ivfflat index (for large datasets)
+├── scripts/                          # One-off utility scripts
+│   ├── init_db.sql                   # CREATE TABLE enterprise_docs, semantic_cache
+│   ├── seed_docs.py                  # Seeds 6 sample enterprise documents
+│   ├── apply_schema.py               # Runs init_db.sql against Neon
+│   ├── check_connection.py           # Verifies DB connectivity
+│   ├── check_redis.py                # Verifies Redis connectivity
+│   ├── clear_cache.py                # Truncates semantic_cache
+│   └── create_index.py               # Creates ivfflat index (for large datasets)
 │
-├── ui/                           # Next.js frontend
+├── ui/                               # Next.js frontend
 │   └── src/
+│       ├── proxy.ts                  # Clerk auth proxy (Next.js 16 convention)
 │       ├── app/
-│       │   ├── layout.tsx        # Root layout, font loading, metadata
-│       │   ├── page.tsx          # Home page: header, DocumentUpload, QueryForm, footer
-│       │   └── globals.css       # Tailwind v4 @import + @theme color/font tokens
+│       │   ├── layout.tsx            # Root layout: ClerkProvider, fonts, metadata
+│       │   ├── page.tsx              # Home page: AuthNav, header, AppShell, footer
+│       │   └── globals.css           # Tailwind v4 @import + @theme tokens
 │       ├── components/
-│       │   ├── QueryForm.tsx     # Chat-style input, job submission, SSE consumption
-│       │   ├── AnswerStream.tsx  # Streaming answer panel, metadata bar
-│       │   ├── DocumentCard.tsx  # Individual retrieved source chunk card
-│       │   └── DocumentUpload.tsx # Collapsible KB panel, drag-drop PDF upload
+│       │   ├── AppShell.tsx          # Mode detection: cloud vs local branch
+│       │   ├── AuthNav.tsx           # Clerk sign-in button / UserButton
+│       │   ├── ModeSelector.tsx      # Settings panel: provider, API key, model
+│       │   ├── QueryForm.tsx         # Cloud: job submit + SSE stream
+│       │   ├── AnswerStream.tsx      # Streaming answer + metadata bar
+│       │   ├── DocumentCard.tsx      # Retrieved chunk card (cloud mode)
+│       │   ├── DocumentUpload.tsx    # Cloud: drag-drop PDF → /api/ingest
+│       │   ├── LocalQueryForm.tsx    # Local: embed → IndexedDB → LLM stream
+│       │   └── LocalDocumentUpload.tsx # Local: PDF → pdfjs → embedder → IndexedDB
 │       └── lib/
-│           └── api.ts            # Typed fetch wrappers for all backend endpoints
+│           ├── api.ts                # Typed fetch wrappers for backend endpoints
+│           ├── appMode.ts            # LocalSettings type + localStorage I/O
+│           ├── localChunker.ts       # Text chunking (mirrors Python backend logic)
+│           ├── localDb.ts            # IndexedDB schema, addChunks, searchChunks
+│           ├── localEmbedder.ts      # @huggingface/transformers lazy singleton
+│           ├── localPdf.ts           # pdfjs-dist page extraction
+│           └── localLlm.ts           # OpenAI / Gemini / Anthropic SSE streaming
 │
-├── Dockerfile.api                # API container image
-├── Dockerfile.worker             # Worker container image
-├── Dockerfile.ui                 # Next.js container image
-├── docker-compose.yml            # Multi-service orchestration
-├── requirements.txt              # Python dependencies (pinned)
-├── DOCUMENTATION.md              # This file
-└── .env                          # Local secrets (not committed)
+├── Dockerfile.api                    # API container image
+├── Dockerfile.worker                 # Worker container image
+├── Dockerfile.ui                     # Next.js container image
+├── docker-compose.yml                # Multi-service orchestration
+├── requirements.txt                  # Python dependencies (pinned)
+├── DOCUMENTATION.md                  # This file
+└── .env                              # Backend secrets (not committed)
 ```
 
 ---
@@ -240,571 +253,488 @@ enterprise-qna/
 -- pgvector extension (pre-installed on Neon)
 CREATE EXTENSION IF NOT EXISTS vector;
 
--- Knowledge base documents + their vector embeddings
+-- Cloud knowledge base: documents + vector embeddings
 CREATE TABLE enterprise_docs (
     id        SERIAL PRIMARY KEY,
-    content   TEXT        NOT NULL,           -- chunk text
-    metadata  JSONB       DEFAULT '{}',        -- {source, page, chunk_index} for PDFs
-    embedding vector(384)                     -- all-MiniLM-L6-v2 output
+    content   TEXT        NOT NULL,
+    metadata  JSONB       DEFAULT '{}',   -- {source, page, chunk_index} for PDFs
+    embedding vector(384)                 -- all-MiniLM-L6-v2 output
 );
 
--- Semantic cache for previously answered questions
+-- Semantic cache: previously answered Q&A pairs
 CREATE TABLE semantic_cache (
     id          SERIAL PRIMARY KEY,
     question    TEXT        NOT NULL,
     answer      TEXT        NOT NULL,
-    embedding   vector(384),                  -- embedding of the question
+    embedding   vector(384),
     created_at  TIMESTAMPTZ DEFAULT NOW(),
-    hit_count   INT         DEFAULT 0         -- incremented on each cache hit
+    hit_count   INT         DEFAULT 0
 );
 ```
 
-**Index note:** No `ivfflat` index is created by default. For datasets under ~10,000 rows, PostgreSQL's sequential scan (`ORDER BY embedding <=> $1`) is faster than the approximate index. Run `scripts/create_index.py` when row count exceeds ~10k.
-
-### Metadata format for uploaded PDFs
-
-Rows inserted by `POST /api/ingest` carry structured metadata:
-```json
-{
-  "source": "quarterly_report.pdf",
-  "page": 3,
-  "chunk_index": 12
-}
-```
-
-Rows seeded by `scripts/seed_docs.py` have `metadata = {}` (no source field). The `GET /api/documents` endpoint filters to rows where `metadata->>'source' IS NOT NULL`.
+**Index note:** No `ivfflat` index by default. Sequential scan is faster for < ~10k rows. Run `scripts/create_index.py` when the table grows beyond that.
 
 ---
 
-## 6. RAG Pipeline
+## 6. RAG Pipeline — Cloud Mode
 
-Every query goes through these stages inside `workers/llm_worker.py`:
+Every cloud query runs through these stages in `workers/llm_worker.py`:
 
 ```
-Question (text)
+Question (text) + Clerk JWT (validated by API before enqueue)
        │
        ▼
-1. Embed query
-   model.encode(question, normalize_embeddings=True)
-   → 384-dim float list
+1. Embed query — all-MiniLM-L6-v2 on server GPU/CPU (~20–80ms)
        │
        ▼
 2. Semantic cache lookup (pipeline/retrieval.py)
-   SELECT ... FROM semantic_cache ORDER BY embedding <=> $1 LIMIT 3
    threshold: 0.92 similarity
-       │
-   ┌───┴───┐
-   │ HIT   │ → stream cached answer (8ms total), skip steps 3–5
-   │ MISS  │ → continue
-   └───┬───┘
+   ├── HIT  → stream cached answer (~8ms total), skip steps 3–5
+   └── MISS → continue
        │
        ▼
-3. Document retrieval (pipeline/retrieval.py)
-   SELECT content, 1-(embedding<=>$1) AS sim
-   FROM enterprise_docs ORDER BY embedding<=>$1 LIMIT top_k
-   Python-side filter: similarity > threshold (default 0.20)
-       │
-   ┌───┴───────────┐
-   │ 0 docs above  │ → emit "guardrail" SSE event, skip LLM call
-   │ threshold     │
-   │ ≥1 doc above  │ → continue
-   └───┬───────────┘
+3. Document retrieval — pgvector cosine similarity
+   SELECT content, 1-(embedding<=>$1) AS sim FROM enterprise_docs
+   ORDER BY embedding<=>$1 LIMIT top_k
+   Python filter: similarity > threshold (default 0.20)
+   ├── 0 docs → emit "guardrail" event, no LLM call
+   └── ≥1 doc → continue
        │
        ▼
-4. Prompt construction (pipeline/rag_prompt.py)
+4. Prompt construction
    System: "Answer ONLY using provided context."
    Human:  "Context:\n{docs}\n\nQuestion: {question}"
        │
        ▼
-5. LLM generation (Google Gemini 2.5 Flash)
-   llm.astream(messages) — async iterator of token chunks
+5. Gemini 2.5 Flash streaming → PUBLISH tokens → SSE → browser
        │
        ▼
-6. Token streaming
-   Each token → PUBLISH job:{id} → SSE endpoint → browser
-       │
-       ▼
-7. Cache write (pipeline/cache.py)
-   After stream ends: INSERT INTO semantic_cache
-   Distributed lock prevents duplicate writes under concurrent workers
+6. Cache write (after stream) — INSERT INTO semantic_cache
+   Distributed Redis lock prevents duplicate writes
 ```
-
-### Guardrail
-
-If no document exceeds the similarity threshold, the LLM is **never called**. The worker emits a `guardrail` SSE event with a "no relevant information found" message. This prevents hallucination on out-of-scope questions.
 
 ---
 
-## 7. Semantic Cache
+## 7. RAG Pipeline — Local Mode
 
-The cache stores every successfully answered Q&A pair as a vector embedding of the question. Future questions with cosine similarity ≥ 0.92 to a cached question are served the stored answer without calling the LLM.
+Runs entirely in the browser; no server required beyond the initial page load.
 
-**Why 0.92?** High enough that paraphrases of the same question get a cache hit, but low enough that semantically different questions don't.
+```
+Question (text)  +  IndexedDB (populated by LocalDocumentUpload)
+       │
+       ▼
+1. Load embedder (first time only)
+   @huggingface/transformers — downloads Xenova/all-MiniLM-L6-v2 ONNX
+   ~25 MB download, cached in browser Cache API after first use
+   Shows download progress bar in UI
+       │
+       ▼
+2. Embed question → 384-dim Float32Array
+       │
+       ▼
+3. Cosine similarity search over all IndexedDB chunks
+   Brute-force dot product (both vectors L2-normalized)
+   Threshold: 0.20  |  Top-k: 3
+   ├── 0 results → "Upload documents first" error
+   └── results → build context string
+       │
+       ▼
+4. Stream from user's LLM API
+   Provider selection: OpenAI | Gemini | Anthropic
+   API key from ModeSelector settings (localStorage)
 
-**Distributed lock** (in `pipeline/cache.py`): When two workers pick up the same question simultaneously, both will miss the cache and both try to write. A Redis `SET NX PX 30000` lock on `lock:cache:{question_hash[:16]}` ensures only one writes. The other checks the cache again after releasing.
-
-**Cache inspection:** Run `scripts/clear_cache.py` to reset. The `hit_count` column tracks how many times each cached answer has been reused.
+   OpenAI:    POST https://api.openai.com/v1/chat/completions
+   Gemini:    POST https://generativelanguage.googleapis.com/...?alt=sse
+   Anthropic: POST https://api.anthropic.com/v1/messages
+              (uses anthropic-dangerous-direct-browser-access: true header)
+       │
+       ▼
+5. Tokens stream directly into LocalQueryForm UI
+```
 
 ---
 
-## 8. PDF Ingestion
+## 8. Semantic Cache
 
-Handled by `api/routes/ingest.py`.
+Cloud mode only. The cache stores every successfully answered Q&A pair as a vector embedding of the question. Future questions with cosine similarity ≥ 0.92 serve the stored answer without an LLM call.
 
-### Upload flow
+**Distributed lock** (`pipeline/cache.py`): Redis `SET NX PX 30000` on `lock:cache:{question_hash[:16]}` prevents duplicate writes when multiple workers process the same question simultaneously.
 
-```
-POST /api/ingest (multipart/form-data)
-       │
-       ▼
-Validate: file must end in .pdf, max 10 MB
-       │
-       ▼
-pypdf.PdfReader → extract text page by page
-       │
-       ▼
-_chunk_text(): split each page into ~600-char overlapping chunks
-  - Prefers breaking at ". " / "\n\n" / "\n" boundaries
-  - 100-char overlap between adjacent chunks
-  - Minimum chunk size: 50 chars (tiny fragments discarded)
-       │
-       ▼
-all-MiniLM-L6-v2.encode(chunks, normalize_embeddings=True)
-  (model lazy-loaded on first upload, cached in-process)
-  (runs in ThreadPoolExecutor — non-blocking to event loop)
-       │
-       ▼
-asyncpg executemany → INSERT INTO enterprise_docs
-  content   = chunk text
-  metadata  = {source: filename, page: N, chunk_index: N}
-  embedding = 384-dim vector
-       │
-       ▼
-Return: {filename, pages_read, chunks_stored}
-```
-
-**Chunking rationale:** `all-MiniLM-L6-v2` has a 256-token input limit (~300–400 chars). Chunks at 600 chars with 100-char overlap stay safely under the limit while preserving context across chunk boundaries.
+**Cache inspection:** Run `scripts/clear_cache.py` to reset. The `hit_count` column tracks reuse.
 
 ---
 
-## 9. API Reference
+## 9. PDF Ingestion
 
-Base URL: `http://localhost:8000` (dev) or via the Next.js proxy at `/api/*`
+### Cloud mode — `POST /api/ingest`
+
+```
+multipart/form-data (PDF, max 10 MB)
+  → pypdf extracts text page by page
+  → _chunk_text(): ~600 chars, 100-char overlap, natural break points
+  → all-MiniLM-L6-v2.encode() in ThreadPoolExecutor (non-blocking)
+  → asyncpg executemany → INSERT INTO enterprise_docs
+  ← {filename, pages_read, chunks_stored}
+```
+
+### Local mode — `LocalDocumentUpload`
+
+```
+File picker / drag-drop (PDF, client-side, up to ~50 MB practical)
+  → pdfjs-dist (CDN worker) extracts text page by page
+  → localChunker.chunkText(): same algorithm as server (~600 chars, 100 overlap)
+  → @huggingface/transformers: batch embed (32 chunks at a time)
+     shows live progress bar: "Embedding 64/200 chunks"
+  → idb: addChunks() → INSERT into IndexedDB chunks store
+  ← success message with page count and chunk count
+```
+
+---
+
+## 10. API Reference
+
+Base URL: `http://localhost:8000` (dev) or via the Next.js proxy at `/api/*`.
+
+**Authentication:** Routes marked `[auth]` require `Authorization: Bearer <clerk_jwt>` when `CLERK_JWKS_URL` is configured in the backend `.env`. If `CLERK_JWKS_URL` is not set, all routes are open (development mode).
+
+---
 
 ### `GET /health`
-Checks database connectivity.
-
-**Response 200**
 ```json
-{
-  "status": "healthy",
-  "database": "connected",
-  "embed_model": "none (worker-only)",
-  "version": "3.0.0"
-}
+{ "status": "healthy", "database": "connected", "embed_model": "none (worker-only)", "version": "3.0.0" }
 ```
 
 ---
 
-### `POST /api/query`
-Submits a question for async processing. Returns immediately.
+### `POST /api/query` `[auth]`
 
 **Request**
 ```json
-{
-  "question": "What was Q3 revenue?",
-  "top_k": 3,
-  "similarity_threshold": 0.20
-}
+{ "question": "What was Q3 revenue?", "top_k": 3, "similarity_threshold": 0.20 }
 ```
-
-| Field | Type | Default | Constraints |
-|---|---|---|---|
-| `question` | string | required | 3–1000 chars |
-| `top_k` | int | `3` | 1–10 |
-| `similarity_threshold` | float | `0.20` | 0.0–1.0 |
-
 **Response 202**
 ```json
-{
-  "job_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-  "stream_url": "/api/query/3fa85f64.../stream",
-  "status": "queued"
-}
+{ "job_id": "uuid", "stream_url": "/api/query/uuid/stream", "status": "queued" }
 ```
+Returns **401** if auth is enabled and no/invalid token is provided.
 
 ---
 
 ### `GET /api/query/{job_id}/stream`
-Opens an SSE stream for the given job. Events are forwarded from Redis pub/sub as the worker generates them.
 
-**SSE Events**
+SSE events:
 
-| Event | Data | Description |
+| Event | Data | Notes |
 |---|---|---|
-| `metadata` | JSON object | Sent first; contains retrieval stats |
-| `token` | plain string | One generated token; repeats until done |
+| `metadata` | JSON | Retrieval stats (cache hit/miss, timings, docs) |
+| `token` | plain string | Repeats per generated token |
 | `done` | `"[DONE]"` | Stream complete |
-| `guardrail` | JSON | No relevant docs found; LLM not called |
+| `guardrail` | JSON | No relevant docs; LLM not called |
 | `error` | JSON `{message}` | Pipeline error |
-
-**`metadata` payload (cache miss)**
-```json
-{
-  "cache_hit": false,
-  "docs_retrieved": 3,
-  "documents": [
-    {"content": "...", "similarity": 0.742}
-  ],
-  "embed_ms": 34,
-  "cache_lookup_ms": 12,
-  "retrieve_ms": 48
-}
-```
-
-**`metadata` payload (cache hit)**
-```json
-{
-  "cache_hit": true,
-  "similarity": 0.9631,
-  "cached_question": "What was Q3 revenue?",
-  "docs_retrieved": null,
-  "documents": [],
-  "embed_ms": 31,
-  "cache_lookup_ms": 8,
-  "retrieve_ms": null
-}
-```
-
-Returns **404** if `job_id` does not exist or has expired (TTL: 300s).
 
 ---
 
-### `POST /api/ingest`
-Uploads a PDF and ingests it into the knowledge base.
+### `POST /api/ingest` `[auth]`
 
-**Request:** `multipart/form-data`, field name `file`.
-
-**Constraints:** `.pdf` extension required, max 10 MB.
-
-**Response 201**
+`multipart/form-data`, field `file`. Returns **201**:
 ```json
-{
-  "filename": "quarterly_report.pdf",
-  "pages_read": 12,
-  "chunks_stored": 47
-}
+{ "filename": "report.pdf", "pages_read": 12, "chunks_stored": 47 }
 ```
-
-**Errors:**
-- `422` — not a PDF, or no extractable text
-- `413` — file exceeds 10 MB limit
+Returns **422** (not PDF / no text), **413** (> 10 MB), **401/403** (bad auth).
 
 ---
 
 ### `GET /api/documents`
-Lists all PDFs in the knowledge base with their chunk counts.
-
-**Response 200**
 ```json
-[
-  {"source": "annual_report.pdf", "chunk_count": 83},
-  {"source": "product_roadmap.pdf", "chunk_count": 29}
-]
+[{ "source": "report.pdf", "chunk_count": 47 }]
 ```
-
-Only documents ingested via `POST /api/ingest` appear here (seed data is excluded).
+Only shows docs uploaded via `/api/ingest` (not seed data).
 
 ---
 
 ### `GET /metrics`
-Prometheus metrics exposition in text format.
-
-| Metric | Type | Description |
-|---|---|---|
-| `qna_jobs_submitted_total` | Counter | Total questions submitted |
-| `qna_cache_lookups_total{result}` | Counter | `hit` / `miss` / `guardrail` |
-| `qna_sse_connections_total` | Counter | Total SSE connections opened |
-| `qna_job_duration_seconds` | Histogram | End-to-end job latency |
+Prometheus text exposition. Metrics: `qna_jobs_submitted_total`, `qna_cache_lookups_total{result}`, `qna_sse_connections_total`, `qna_job_duration_seconds`.
 
 ---
 
-## 10. Frontend & UI System
+## 11. Frontend & UI System
 
 ### Design system
 
-The UI uses **Claude's light-mode visual language** — warm cream backgrounds, terracotta accents, and Inter as the primary typeface.
-
-All colors are defined as Tailwind v4 `@theme` custom properties in `ui/src/app/globals.css`:
+Claude-inspired light-mode palette defined as Tailwind v4 `@theme` tokens in `ui/src/app/globals.css`:
 
 | Token | Value | Usage |
 |---|---|---|
 | `--color-claude-bg` | `#faf9f5` | Page background |
 | `--color-claude-surface` | `#ffffff` | Cards, input areas |
-| `--color-claude-surface2` | `#f5f2ec` | Secondary surfaces, kbd hints |
+| `--color-claude-surface2` | `#f5f2ec` | Secondary surfaces |
 | `--color-claude-border` | `#e5e0d8` | Default borders |
 | `--color-claude-border-hi` | `#d0c9bf` | Focus/hover borders |
 | `--color-claude-text` | `#1a1614` | Primary text |
 | `--color-claude-muted` | `#6b6360` | Secondary text |
-| `--color-claude-subtle` | `#a09890` | Placeholder, hints |
-| `--color-claude-accent` | `#da7756` | Buttons, links, icons (terracotta) |
-| `--color-claude-accent-dim` | `#c26040` | Accent hover state |
-| `--color-claude-success` | `#1e8a57` | Cache-hit badge, match indicators |
-| `--color-claude-info` | `#2d6fa3` | Live-generation badge |
+| `--color-claude-subtle` | `#a09890` | Placeholders, hints |
+| `--color-claude-accent` | `#da7756` | Buttons, links, icons |
+| `--color-claude-accent-dim` | `#c26040` | Accent hover |
+| `--color-claude-success` | `#1e8a57` | Success badges |
+| `--color-claude-info` | `#2d6fa3` | Info badges |
 
 ### Components
 
-| Component | File | Description |
+| Component | Mode | Description |
 |---|---|---|
-| `DocumentUpload` | `components/DocumentUpload.tsx` | Collapsible knowledge base panel. Lists uploaded docs, drag-drop PDF upload zone, upload feedback. |
-| `QueryForm` | `components/QueryForm.tsx` | Chat-style textarea with submit button, keyboard hints. Drives the full query → stream lifecycle. |
-| `AnswerStream` | `components/AnswerStream.tsx` | Renders streaming answer with blinking cursor, metadata bar (cache hit/miss, timing), and retrieved document list. |
-| `DocumentCard` | `components/DocumentCard.tsx` | Single retrieved chunk card with source index and similarity score badge. |
+| `AppShell` | Both | Detects sign-in state, renders cloud or local branch |
+| `AuthNav` | Both | Clerk sign-in button (modal) or UserButton |
+| `ModeSelector` | Both | Collapsible settings: provider, API key, model, cloud toggle |
+| `QueryForm` | Cloud | Job submission, SSE consumption, answer display |
+| `AnswerStream` | Cloud | Streaming answer panel with metadata bar |
+| `DocumentCard` | Cloud | Retrieved chunk card with similarity score |
+| `DocumentUpload` | Cloud | Drag-drop PDF → `/api/ingest` |
+| `LocalQueryForm` | Local | Embed → IndexedDB search → LLM stream |
+| `LocalDocumentUpload` | Local | PDF → pdfjs → embedder → IndexedDB |
 
-### API client
+### API client (`ui/src/lib/api.ts`)
 
-`ui/src/lib/api.ts` exports typed wrappers for all backend endpoints:
+All functions accept an optional `token` (Clerk JWT) forwarded as `Authorization: Bearer`:
 
 ```typescript
-submitQuery(request: QueryRequest): Promise<JobSubmitResponse>
-streamAnswer(jobId: string): AsyncGenerator<SSEEvent>
-uploadPdf(file: File): Promise<IngestResponse>
-listDocuments(): Promise<DocumentInfo[]>
+submitQuery(request, token?)   → Promise<JobSubmitResponse>
+streamAnswer(jobId, token?)    → AsyncGenerator<SSEEvent>
+uploadPdf(file, token?)        → Promise<IngestResponse>
+listDocuments(token?)          → Promise<DocumentInfo[]>
 ```
 
-All requests go through Next.js rewrites at `next.config.js` — `/api/*` is proxied to `http://localhost:8000` in dev and `http://api:8000` in Docker.
+---
+
+## 12. Configuration Reference
+
+### Backend — `<project-root>/.env`
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `POSTGRES_DSN` | ✅ | — | Neon connection string |
+| `REDIS_URL` | ✅ | — | Upstash TLS URL (`rediss://...`) |
+| `GOOGLE_API_KEY` | ✅ | — | Google Gemini API key |
+| `CLERK_JWKS_URL` | ⭐ | unset | If set, enables JWT auth on backend routes. Format: `https://<your-clerk-domain>/.well-known/jwks.json` |
+| `EMBEDDING_MODEL` | | `all-MiniLM-L6-v2` | Sentence-transformers model |
+| `TOP_K_RESULTS` | | `3` | Docs retrieved per query |
+| `SIMILARITY_THRESHOLD` | | `0.20` | Minimum cosine similarity |
+| `CACHE_THRESHOLD` | | `0.92` | Semantic cache hit threshold |
+| `REDIS_STREAM_KEY` | | `jobs` | Redis Stream name |
+| `REDIS_CONSUMER_GROUP` | | `qna-workers` | Consumer group |
+| `REDIS_CONSUMER_NAME` | | `worker-1` | Unique per worker |
+| `JOB_TTL_SECONDS` | | `300` | Redis TTL for job keys |
+| `STREAM_TIMEOUT_SECONDS` | | `120` | Max SSE wait time |
+| `POOL_MIN_SIZE` / `POOL_MAX_SIZE` | | `1` / `5` | asyncpg pool size |
+| `INGEST_CHUNK_SIZE` | | `600` | Target chars per PDF chunk |
+| `INGEST_CHUNK_OVERLAP` | | `100` | Overlap chars between chunks |
+| `INGEST_MAX_FILE_MB` | | `10` | Server-side upload limit |
+| `CORS_ORIGINS` | | `http://localhost:3000` | Comma-separated allowed origins |
+| `LOG_FORMAT` | | `console` | `console` or `json` |
+
+### Frontend — `ui/.env.local` *(create this file — it is gitignored)*
+
+| Variable | Required | Description |
+|---|---|---|
+| `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | ⭐ for cloud mode | Clerk publishable key (`pk_test_...`) |
+| `CLERK_SECRET_KEY` | ⭐ for cloud mode | Clerk secret key (`sk_test_...`) |
+
+Example `ui/.env.local`:
+```
+NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_xxxxxxxxxxxxxxxxxxxxxx
+CLERK_SECRET_KEY=sk_test_xxxxxxxxxxxxxxxxxxxxxx
+```
 
 ---
 
-## 11. Configuration Reference
+## 13. Setup Guide — What You Need to Do
 
-All configuration lives in `.env` (never committed). Copy `.env.example` to `.env`.
+### Local mode (free) — minimal setup
 
-### Required
+**No server required. No account needed.**
 
-| Variable | Example | Description |
-|---|---|---|
-| `POSTGRES_DSN` | `postgresql://user:pass@host/db?sslmode=require` | Neon connection string (non-pooled) |
-| `REDIS_URL` | `rediss://default:token@host:6380` | Upstash TLS URL |
-| `GOOGLE_API_KEY` | `AIzaSy...` | Google Gemini API key |
+1. Clone the repo and install frontend dependencies:
+   ```bash
+   cd ui && npm install
+   npm run dev
+   ```
+2. Open `http://localhost:3000`.
+3. Click **Settings** → choose your LLM provider (OpenAI, Gemini, or Anthropic) → paste your API key → Save.
+4. Open **Local Knowledge Base** → drop in a PDF. Wait for embedding to finish (progress bar shows).
+5. Type a question and press Enter. The answer streams directly in your browser.
 
-### Optional (with defaults)
-
-| Variable | Default | Description |
-|---|---|---|
-| `EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Sentence-transformers model name |
-| `TOP_K_RESULTS` | `3` | Default docs to retrieve per query |
-| `SIMILARITY_THRESHOLD` | `0.20` | Default minimum cosine similarity |
-| `CACHE_THRESHOLD` | `0.92` | Minimum similarity for a cache hit |
-| `REDIS_STREAM_KEY` | `jobs` | Redis Stream name for the job queue |
-| `REDIS_CONSUMER_GROUP` | `qna-workers` | Consumer group name |
-| `REDIS_CONSUMER_NAME` | `worker-1` | Unique name per worker instance |
-| `JOB_TTL_SECONDS` | `300` | Redis TTL for job status keys |
-| `STREAM_TIMEOUT_SECONDS` | `120` | Max SSE wait before timeout error |
-| `POOL_MIN_SIZE` | `1` | asyncpg pool minimum connections |
-| `POOL_MAX_SIZE` | `5` | asyncpg pool maximum connections |
-| `INGEST_CHUNK_SIZE` | `600` | Target chars per PDF chunk |
-| `INGEST_CHUNK_OVERLAP` | `100` | Overlap chars between chunks |
-| `INGEST_MAX_FILE_MB` | `10` | Upload size limit |
-| `CORS_ORIGINS` | `http://localhost:3000` | Comma-separated allowed origins |
-| `LOG_FORMAT` | `console` | `console` or `json` |
-| `LOG_LEVEL` | `info` | Logging verbosity |
-| `HOST` | `0.0.0.0` | Uvicorn bind address |
-| `PORT` | `8000` | Uvicorn port |
+**That's it.** No `.env` files, no database, no Redis. The embedding model downloads once (~25 MB) and is cached by the browser.
 
 ---
 
-## 12. Running Locally
+### Cloud mode (backend) — full setup
 
-### Prerequisites
+#### Step 1: Clerk
 
-- Python 3.12+
-- Node.js 20+
-- A Neon account (free tier) with `init_db.sql` applied
-- An Upstash Redis instance (free tier)
-- A Google AI Studio API key (Gemini)
+1. Create a free account at [clerk.com](https://clerk.com).
+2. Create a new application (choose any name). Enable the sign-in methods you want (Google, GitHub, Email).
+3. From the Clerk dashboard, go to **API Keys** and copy:
+   - `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` (starts with `pk_test_`)
+   - `CLERK_SECRET_KEY` (starts with `sk_test_`)
+4. Find your **JWKS URL**: in the Clerk dashboard go to **API Keys** → scroll down → copy the JWKS URL (format: `https://<your-domain>.clerk.accounts.dev/.well-known/jwks.json`).
 
-### Backend
+#### Step 2: Create `ui/.env.local`
+
+This file does **not** exist in the repo — create it at `ui/.env.local`:
+
+```
+NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_...
+CLERK_SECRET_KEY=sk_test_...
+```
+
+#### Step 3: Configure the backend `.env`
+
+Add `CLERK_JWKS_URL` to `<project-root>/.env`:
+
+```
+CLERK_JWKS_URL=https://<your-domain>.clerk.accounts.dev/.well-known/jwks.json
+```
+
+Also make sure these are set (required for the backend to run):
+
+```
+POSTGRES_DSN=postgresql://user:pass@host/db?sslmode=require
+REDIS_URL=rediss://default:token@host:6380
+GOOGLE_API_KEY=AIzaSy...
+```
+
+#### Step 4: Set up the database
+
+1. Create a free [Neon](https://neon.tech) Postgres database.
+2. Create a free [Upstash](https://upstash.com) Redis database.
+3. Apply the schema:
+   ```bash
+   python -m venv .venv && .venv\Scripts\activate   # Windows
+   pip install -r requirements.txt
+   python scripts/apply_schema.py
+   ```
+
+#### Step 5: Run the backend
 
 ```bash
-# 1. Create and activate virtual environment
-python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
-
-# 2. Install dependencies
-pip install -r requirements.txt
-
-# 3. Copy and fill in environment variables
-cp .env.example .env
-# Edit .env with your Neon DSN, Upstash Redis URL, and Google API key
-
-# 4. Apply database schema
-python scripts/apply_schema.py
-
-# 5. (Optional) Seed sample documents
-python scripts/seed_docs.py
-
-# 6. Start the API server
+# Terminal 1 — API server
 python -m api.main
 
-# 7. Start a worker (new terminal)
+# Terminal 2 — LLM worker
 python -m workers.llm_worker
 ```
 
-### Frontend
+#### Step 6: Run the frontend
 
 ```bash
-cd ui
-npm install
-npm run dev
-# Open http://localhost:3000
+cd ui && npm run dev
+# Open http://localhost:3000 — click "Sign in for cloud mode"
 ```
 
 ---
 
-## 13. Docker Deployment
+## 14. Docker Deployment
 
 ```bash
 # Build and start all services (API + 2 workers + UI)
 docker-compose up --build
 
-# Scale workers (e.g., 4 workers)
-docker-compose up --build --scale worker-1=1 --scale worker-2=1
-# (Add more worker-N services in docker-compose.yml for true scaling)
+# Add CLERK_JWKS_URL to .env before building for auth to work in Docker
+# The UI reads NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY at build time — add it to .env too
 
 # View logs
 docker-compose logs -f api
 docker-compose logs -f worker-1
 
-# Stop everything
+# Stop
 docker-compose down
 ```
 
-**Service startup order:** Docker health checks ensure the API is healthy before workers start. Workers wait for the API because they share the same Redis consumer group, and the group is created by the first process to run.
-
-**Horizontal worker scaling:** Add additional `worker-N` entries in `docker-compose.yml`, each with a unique `REDIS_CONSUMER_NAME`. Each worker independently reads from the `jobs` stream. Redis consumer groups guarantee each job is processed exactly once regardless of the number of workers.
+**Note for Docker + Clerk:** `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` is embedded at Next.js build time. Add it to `.env` (the docker-compose `env_file`) so the UI container picks it up during `docker-compose up --build`.
 
 ---
 
-## 14. Monetization & Tier Architecture
+## 15. Monetization & Tier Architecture
 
-### The model
+### Current implementation
 
-| | Free / Local Tier | Paid / Backend Tier |
+| | Free / Local | Cloud / Signed-in |
 |---|---|---|
-| **Processing** | Browser (WebWorker) | Server (FastAPI + worker) |
-| **Embeddings** | Transformers.js ONNX | all-MiniLM-L6-v2 (server GPU/CPU) |
-| **Vector store** | Browser IndexedDB | PostgreSQL pgvector (Neon) |
+| **Processing** | Browser (ONNX + JS) | Server (FastAPI + worker) |
+| **Embeddings** | @huggingface/transformers | all-MiniLM-L6-v2 (server) |
+| **Vector store** | Browser IndexedDB (per-device) | PostgreSQL pgvector (Neon) |
 | **LLM** | User's own API key | Google Gemini (operator's key) |
-| **Knowledge base** | Per-device (IndexedDB) | Cloud (shared DB per user) |
-| **Account required** | No | Yes |
-| **Cost to operator** | $0 | Hosting + LLM tokens |
-| **Cost to user** | $0 (+ own LLM costs) | Subscription |
+| **Auth** | None needed | Clerk (any sign-in method) |
+| **Cost to operator** | $0 | Hosting + Gemini tokens |
+| **Cost to user** | $0 (+ own LLM costs) | Free while Clerk free tier holds |
 
-### User identification design
+### How auth gating works
 
-Users are distinguished by a **bearer token** stored in the browser (`localStorage`). The token is issued after successful payment and encodes the user's subscription tier.
+1. Frontend (`AppShell`) calls `useAuth()` from Clerk to check sign-in state.
+2. If signed in, calls `getToken()` to get a fresh Clerk session JWT (RS256, short-lived).
+3. All `/api/*` backend calls include `Authorization: Bearer <jwt>`.
+4. Backend `verify_backend_access()` dependency (`api/dependencies.py`):
+   - If `CLERK_JWKS_URL` is not set → open access (dev mode, no auth).
+   - If set → fetch Clerk JWKS, verify JWT signature and expiry via `PyJWT.PyJWKClient`.
+   - Invalid/expired → HTTP 401/403.
+5. Any successfully authenticated Clerk user gets full cloud access.
 
-**Planned `users` table:**
+### Path to real monetization (future)
 
-```sql
-CREATE TABLE users (
-    id                      UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    email                   TEXT        UNIQUE NOT NULL,
-    api_token               TEXT        UNIQUE NOT NULL,  -- SHA-256 hashed
-    tier                    TEXT        NOT NULL DEFAULT 'free',  -- 'free' | 'paid'
-    created_at              TIMESTAMPTZ DEFAULT NOW(),
-    subscription_expires_at TIMESTAMPTZ
-);
+To charge for cloud access, add a Clerk `publicMetadata.tier` check inside `verify_backend_access()`:
+
+```python
+payload = jwt.decode(token, signing_key.key, algorithms=["RS256"])
+tier = payload.get("publicMetadata", {}).get("tier", "free")
+if tier != "paid":
+    raise HTTPException(402, "Upgrade to paid tier to use cloud processing.")
 ```
 
-**How gating works:**
-
-1. The frontend checks `localStorage` for a backend token on load.
-2. If a token exists → send `Authorization: Bearer <token>` on all `/api/*` requests → backend mode.
-3. If no token → prompt the user to enter their own LLM API key → local mode.
-4. A FastAPI middleware / dependency (`verify_backend_token`) validates the token on protected routes:
-   - `POST /api/query` → requires valid paid token
-   - `POST /api/ingest` → requires valid paid token (or allow free tier for local uploads)
-   - `GET /api/documents` → requires valid token
-
-**Token lifecycle:**
-- Issued via a `POST /api/auth/login` or `POST /api/auth/token` endpoint after email verification or OAuth.
-- Validated by hashing the incoming token and comparing to the `api_token` column.
-- Expired when `subscription_expires_at < NOW()`.
-
-**Payment integration (planned):** Stripe webhooks update the `tier` and `subscription_expires_at` columns when a subscription is activated, renewed, or cancelled.
-
-### Frontend detection logic (planned)
-
-```typescript
-// ui/src/lib/mode.ts
-export type AppMode = "backend" | "local";
-
-export function detectMode(): AppMode {
-  const token = localStorage.getItem("backend_token");
-  return token ? "backend" : "local";
-}
-```
-
-The `QueryForm` and `DocumentUpload` components will branch on this at render time — backend mode talks to `/api/*`, local mode talks to IndexedDB + the user's LLM API.
+Then set `tier: "paid"` in the Clerk dashboard for users who have paid. No Stripe integration is planned — billing is managed manually for now.
 
 ---
 
-## 15. Roadmap
+## 16. Roadmap
 
-### Phase 1 — Local / Free Tier (browser-side RAG)
+### ✅ Phase 1 — Local / Free Tier (DONE)
 
-The goal is a zero-backend mode: the entire RAG pipeline runs in the user's browser using their own LLM API key.
+- [x] Browser PDF extraction via `pdfjs-dist`
+- [x] Browser embeddings via `@huggingface/transformers` v4 (ONNX)
+- [x] IndexedDB vector store via `idb`
+- [x] JS cosine similarity search
+- [x] OpenAI, Gemini, Anthropic streaming from browser
+- [x] `LocalDocumentUpload` with embedding progress bar
+- [x] `LocalQueryForm` with source card display
+- [x] `ModeSelector` settings panel
 
-**Libraries:**
-- [`pdfjs-dist`](https://www.npmjs.com/package/pdfjs-dist) — PDF text extraction in browser
-- [`@huggingface/transformers`](https://www.npmjs.com/package/@huggingface/transformers) v3 — `all-MiniLM-L6-v2` as quantized ONNX, runs in a WebWorker
-- `idb` — typed IndexedDB wrapper for vector storage
-- Direct `fetch()` to OpenAI / Gemini / any OpenAI-compatible API
+### ✅ Phase 2 — Authentication (DONE, via Clerk)
 
-**Implementation plan:**
+- [x] Clerk integration (`@clerk/nextjs` v7)
+- [x] `proxy.ts` (Next.js 16 auth proxy convention)
+- [x] `AuthNav` (sign-in modal + UserButton)
+- [x] `AppShell` auto-mode detection
+- [x] Backend RS256 JWT verification (`PyJWT` + JWKS)
+- [x] Optional gating (`CLERK_JWKS_URL` env var)
+- [ ] Tier metadata check in `verify_backend_access()` for real monetization
 
-1. **`useEmbedder` hook** — lazy-loads the ONNX model in a WebWorker, exposes `embed(texts): Float32Array[]`
-2. **`useKnowledgeBase` hook** — CRUD over IndexedDB (`{id, text, embedding, source, page}`), cosine similarity search
-3. **`LocalQueryForm`** — same UI as backend form but drives the local pipeline:
-   - Embed question → search IndexedDB → build prompt → stream from user's LLM API key
-4. **`LocalDocumentUpload`** — same drag-drop UI but processes PDF in the browser with `pdfjs-dist`
-5. **Mode selector** in settings panel — user chooses backend (enters subscription token) or local (enters LLM API key)
+### Phase 3 — Per-User Knowledge Bases
 
-**Storage budget estimate:**
-- 100-page PDF ≈ 400 chunks × 384 dims × 4 bytes ≈ **600 KB** in IndexedDB
-- Model download: ~25 MB quantized (cached by browser after first use)
-- Brute-force cosine search over 1000 vectors: < 5 ms in JS
-
-**CORS note:** OpenAI and Google Gemini APIs support browser CORS requests. Anthropic's API currently requires a server-side proxy. A minimal `/api/proxy` endpoint (no auth required, just relays) can bridge this for Anthropic users.
-
-### Phase 2 — Authentication & Payments
-
-1. `POST /api/auth/register` — email + password or OAuth (GitHub / Google)
-2. `POST /api/auth/login` — returns a signed JWT or opaque token
-3. Stripe integration — webhook updates `users.tier` on payment events
-4. Backend route middleware — `Depends(require_paid_user)` on gated endpoints
-5. Frontend account panel — shows current tier, subscription expiry, manage billing link
-
-### Phase 3 — Per-User Knowledge Bases (backend tier)
-
-Add a `user_id` foreign key to `enterprise_docs`:
+Each paid user gets their own isolated cloud knowledge base:
 
 ```sql
-ALTER TABLE enterprise_docs ADD COLUMN user_id UUID REFERENCES users(id);
+ALTER TABLE enterprise_docs ADD COLUMN user_id TEXT;
+-- user_id = Clerk user sub claim from JWT payload
 ```
 
-Queries filter by the authenticated user's `user_id` so each paid user has an isolated knowledge base. Admin users can see all rows.
+Queries filter by `user_id` extracted from the verified JWT. Admin sees all rows.
 
 ### Phase 4 — Production Hardening
 
-- ivfflat index auto-creation when `enterprise_docs` exceeds 10k rows
-- Rate limiting per user (`slowapi` or Redis-based token bucket)
-- PDF virus scanning before ingestion (ClamAV or cloud API)
-- Structured audit log: which user asked what, when
-- Grafana dashboard connected to `/metrics`
-- Multi-region Redis (Upstash global) for low-latency SSE anywhere
+- ivfflat index auto-creation when `enterprise_docs` > 10k rows
+- Rate limiting per Clerk user (Redis token bucket)
+- PDF virus scanning before ingestion
+- Structured audit log (user, question, timestamp)
+- Grafana dashboard wired to `/metrics`
+- Multi-region Upstash Redis for global low-latency SSE
 
 ---
 
