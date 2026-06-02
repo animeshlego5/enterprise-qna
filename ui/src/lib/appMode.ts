@@ -20,10 +20,13 @@ export const DEFAULT_MODELS: Record<LlmProvider, string> = {
 };
 
 export const MODEL_OPTIONS: Record<LlmProvider, { value: string; label: string }[]> = {
+  // Model IDs sourced from https://developers.openai.com/api/docs/models (June 2026)
   openai: [
-    { value: "gpt-4o-mini",   label: "GPT-4o Mini — fast & affordable" },
-    { value: "gpt-4o",        label: "GPT-4o — most capable" },
-    { value: "gpt-3.5-turbo", label: "GPT-3.5 Turbo — cheapest" },
+    { value: "gpt-4o-mini",   label: "GPT-4o Mini — reliable & affordable" },
+    { value: "gpt-5.4-nano",  label: "GPT-5.4 Nano — fastest & cheapest" },
+    { value: "gpt-5.4-mini",  label: "GPT-5.4 Mini — fast & capable" },
+    { value: "gpt-5.4",       label: "GPT-5.4 — highly capable" },
+    { value: "gpt-5.5",       label: "GPT-5.5 — most capable" },
   ],
   // Model IDs sourced from https://ai.google.dev/gemini-api/docs/models (June 2026)
   gemini: [
@@ -33,10 +36,11 @@ export const MODEL_OPTIONS: Record<LlmProvider, { value: string; label: string }
     { value: "gemini-3.5-flash",      label: "Gemini 3.5 Flash — frontier performance" },
     { value: "gemini-2.0-flash",      label: "Gemini 2.0 Flash — stable fallback" },
   ],
+  // Model IDs sourced from https://docs.anthropic.com/en/docs/about-claude/models (June 2026)
   anthropic: [
-    { value: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5 — fast & cheap" },
+    { value: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5 — fastest & cheapest" },
     { value: "claude-sonnet-4-6",         label: "Claude Sonnet 4.6 — balanced" },
-    { value: "claude-opus-4-8",           label: "Claude Opus 4.8 — most capable" },
+    { value: "claude-opus-4-7",           label: "Claude Opus 4.7 — most capable" },
   ],
 };
 
