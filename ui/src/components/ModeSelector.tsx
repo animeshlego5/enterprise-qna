@@ -61,7 +61,8 @@ export function ModeSelector({ settings, onChange }: Props) {
         </svg>
       </button>
 
-      {open && (
+      <div className={`grid transition-[grid-template-rows] duration-300 ease-in-out ${open ? "grid-rows-[1fr]" : "grid-rows-[0fr]"}`}>
+        <div className={`overflow-hidden transition-opacity duration-200 ${open ? "opacity-100" : "opacity-0"}`}>
         <div className="mt-1.5 rounded-xl border border-claude-border bg-claude-surface p-5 space-y-5">
 
           {/* Cloud / Local toggle */}
@@ -171,7 +172,8 @@ export function ModeSelector({ settings, onChange }: Props) {
             </button>
           </div>
         </div>
-      )}
+        </div>
+      </div>
     </div>
   );
 }

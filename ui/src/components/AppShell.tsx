@@ -13,7 +13,7 @@ import { LocalDocumentUpload } from "./LocalDocumentUpload";
 import { LocalQueryForm } from "./LocalQueryForm";
 
 export function AppShell() {
-  const { isSignedIn, getToken } = useAuth();
+  const { isSignedIn, isLoaded, getToken } = useAuth();
   const [settings, setSettings] = useState<LocalSettings | null>(null);
   const [token, setToken] = useState<string | null>(null);
 
@@ -31,8 +31,10 @@ export function AppShell() {
     }
   }, [isSignedIn, getToken]);
 
-  // Null during SSR / first paint — avoid layout shift
-  if (settings === null) {
+  // Wait for both localStorage and Clerk to be ready before deciding mode.
+  // Without isLoaded, Clerk returns isSignedIn=undefined while initialising,
+  // which causes a false flash of local mode even for signed-in users.
+  if (settings === null || !isLoaded) {
     return (
       <div className="w-full max-w-3xl space-y-4 animate-pulse">
         <div className="h-12 rounded-xl bg-claude-surface border border-claude-border" />
@@ -50,7 +52,7 @@ export function AppShell() {
 
       {useBackend ? (
         <>
-          <DocumentUpload />
+          <DocumentUpload token={token ?? undefined} />
           <QueryForm token={token ?? undefined} />
         </>
       ) : (
