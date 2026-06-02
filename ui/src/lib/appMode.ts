@@ -19,6 +19,25 @@ export const DEFAULT_MODELS: Record<LlmProvider, string> = {
   anthropic: "claude-haiku-4-5-20251001",
 };
 
+export const MODEL_OPTIONS: Record<LlmProvider, { value: string; label: string }[]> = {
+  openai: [
+    { value: "gpt-4o-mini",      label: "GPT-4o Mini — fast & affordable" },
+    { value: "gpt-4o",           label: "GPT-4o — most capable" },
+    { value: "gpt-3.5-turbo",    label: "GPT-3.5 Turbo — cheapest" },
+  ],
+  gemini: [
+    { value: "gemini-2.0-flash", label: "Gemini 2.0 Flash — fast & free tier" },
+    { value: "gemini-2.5-flash-preview-05-20", label: "Gemini 2.5 Flash Preview" },
+    { value: "gemini-1.5-flash", label: "Gemini 1.5 Flash" },
+    { value: "gemini-1.5-pro",   label: "Gemini 1.5 Pro" },
+  ],
+  anthropic: [
+    { value: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5 — fast & cheap" },
+    { value: "claude-sonnet-4-6",         label: "Claude Sonnet 4.6 — balanced" },
+    { value: "claude-opus-4-8",           label: "Claude Opus 4.8 — most capable" },
+  ],
+};
+
 const DEFAULT_SETTINGS: LocalSettings = {
   provider: "openai",
   apiKey: "",

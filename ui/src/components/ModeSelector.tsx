@@ -8,6 +8,7 @@ import {
   LocalSettings,
   LlmProvider,
   DEFAULT_MODELS,
+  MODEL_OPTIONS,
 } from "@/lib/appMode";
 
 const PROVIDERS: { id: LlmProvider; label: string; placeholder: string }[] = [
@@ -135,12 +136,15 @@ export function ModeSelector({ settings, onChange }: Props) {
               {/* Model */}
               <div>
                 <label className="mb-1.5 block text-sm font-medium text-claude-text">Model</label>
-                <input
-                  type="text"
+                <select
                   value={draft.model}
                   onChange={e => setDraft(d => ({ ...d, model: e.target.value }))}
-                  className="w-full rounded-lg border border-claude-border bg-claude-surface2 px-4 py-2.5 text-sm text-claude-text placeholder-claude-subtle focus:border-claude-border-hi focus:outline-none"
-                />
+                  className="w-full rounded-lg border border-claude-border bg-claude-surface2 px-4 py-2.5 text-sm text-claude-text focus:border-claude-border-hi focus:outline-none"
+                >
+                  {MODEL_OPTIONS[draft.provider].map(opt => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
+                </select>
               </div>
             </div>
           )}
