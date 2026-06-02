@@ -39,8 +39,8 @@ export function ModeSelector({ settings, onChange }: Props) {
   const isBackend = isSignedIn && !settings.forceLocal;
 
   const modeLabel = isBackend
-    ? "☁ Cloud mode"
-    : `⚡ Local · ${PROVIDERS.find(p => p.id === settings.provider)?.label} · ${settings.model}`;
+    ? "Cloud mode"
+    : `Local · ${PROVIDERS.find(p => p.id === settings.provider)?.label} · ${settings.model}`;
 
   return (
     <div className="w-full max-w-3xl mb-4">
