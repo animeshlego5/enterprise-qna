@@ -19,9 +19,10 @@
 11. [Frontend & UI System](#11-frontend--ui-system)
 12. [Configuration Reference](#12-configuration-reference)
 13. [Setup Guide — What You Need to Do](#13-setup-guide--what-you-need-to-do)
-14. [Docker Deployment](#14-docker-deployment)
-15. [Monetization & Tier Architecture](#15-monetization--tier-architecture)
-16. [Roadmap](#16-roadmap)
+14. [Frontend Deployment — Vercel](#14-frontend-deployment--vercel-recommended)
+15. [Docker Deployment (optional, self-hosted)](#15-docker-deployment-optional-self-hosted)
+16. [Monetization & Tier Architecture](#16-monetization--tier-architecture)
+17. [Roadmap](#17-roadmap)
 
 ---
 
@@ -632,7 +633,44 @@ cd ui && npm run dev
 
 ---
 
-## 14. Docker Deployment
+## 14. Frontend Deployment — Vercel (recommended)
+
+The frontend can be deployed for **free on Vercel**. Local mode works with zero backend — no server, no database, nothing to deploy.
+
+### One-time setup
+
+1. Go to [vercel.com](https://vercel.com) → **Add New Project** → Import `animeshlego5/enterprise-qna` from GitHub.
+2. Vercel will auto-detect the `vercel.json` at the repo root and set **Root Directory** to `ui/`.
+3. In **Environment Variables**, add:
+
+   | Variable | Value | Required for |
+   |---|---|---|
+   | `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | `pk_live_...` or `pk_test_...` | Cloud mode sign-in |
+   | `CLERK_SECRET_KEY` | `sk_live_...` or `sk_test_...` | Cloud mode sign-in |
+   | `API_URL` | URL of your deployed backend (e.g. `https://your-api.onrender.com`) | Cloud mode queries |
+
+   > **Local mode only?** You can skip `API_URL` entirely. Local mode runs 100% in the browser — no backend calls.
+
+4. Click **Deploy**. Done.
+
+Future pushes to `main` deploy automatically.
+
+---
+
+### Do you need to run the backend?
+
+**No — not for local mode.** The frontend works as a standalone static app on Vercel:
+- PDF extraction, embeddings, vector search, and LLM calls all happen in the user's browser.
+- The backend is only needed for **cloud mode** (signed-in users who want server-side RAG).
+
+**Is Docker required for the backend?** No. Docker Compose is a convenience for running everything locally with one command. The backend can be run:
+- Locally with plain Python (`python -m api.main` + `python -m workers.llm_worker`)
+- On [Render](https://render.com), [Railway](https://railway.app), or [Fly.io](https://fly.io) without Docker (they detect Python web services automatically)
+- With Docker Compose if you prefer the single-command workflow
+
+---
+
+## 15. Docker Deployment (optional, self-hosted)
 
 ```bash
 # Build and start all services (API + 2 workers + UI)
@@ -653,7 +691,7 @@ docker-compose down
 
 ---
 
-## 15. Monetization & Tier Architecture
+## 16. Monetization & Tier Architecture
 
 ### Current implementation
 
@@ -693,7 +731,7 @@ Then set `tier: "paid"` in the Clerk dashboard for users who have paid. No Strip
 
 ---
 
-## 16. Roadmap
+## 17. Roadmap
 
 ### ✅ Phase 1 — Local / Free Tier (DONE)
 
@@ -738,4 +776,4 @@ Queries filter by `user_id` extracted from the verified JWT. Admin sees all rows
 
 ---
 
-*Last updated: 2026-06-02*
+*Last updated: 2026-06-04*
