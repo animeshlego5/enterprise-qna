@@ -26,6 +26,22 @@
     0%, 100% { opacity: 1; }
     50%       { opacity: 0; }
   }
+
+  /* Background orb drift animations */
+  @keyframes orb-drift-1 {
+    0%, 100% { transform: translate(0, 0) scale(1); }
+    30%       { transform: translate(50px, -35px) scale(1.05); }
+    65%       { transform: translate(-25px, 20px) scale(0.97); }
+  }
+  @keyframes orb-drift-2 {
+    0%, 100% { transform: translate(0, 0) scale(1); }
+    35%       { transform: translate(-40px, 28px) scale(1.06); }
+    70%       { transform: translate(30px, -45px) scale(0.95); }
+  }
+  @keyframes orb-drift-3 {
+    0%, 100% { transform: translate(0, 0) scale(1); }
+    50%       { transform: translate(25px, 40px) scale(1.04); }
+  }
 }
 
 @layer base {
@@ -49,4 +65,54 @@
   ::-webkit-scrollbar-track  { background: transparent; }
   ::-webkit-scrollbar-thumb  { background: var(--color-claude-border); border-radius: 3px; }
   ::-webkit-scrollbar-thumb:hover { background: var(--color-claude-border-hi); }
+}
+
+/* ── Animated background orbs ───────────────────────────────────────── */
+.bg-orbs {
+  position: fixed;
+  inset: 0;
+  z-index: -10;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.bg-orb {
+  position: absolute;
+  border-radius: 50%;
+  /* blur is static so the GPU composites only the transform */
+  will-change: transform;
+}
+
+.bg-orb-1 {
+  width: 640px;
+  height: 640px;
+  top: -120px;
+  right: -100px;
+  background: radial-gradient(circle, rgba(218,119,86,0.11) 0%, rgba(218,119,86,0) 70%);
+  filter: blur(90px);
+  animation: orb-drift-1 32s ease-in-out infinite;
+}
+
+.bg-orb-2 {
+  width: 520px;
+  height: 520px;
+  bottom: -80px;
+  left: -80px;
+  background: radial-gradient(circle, rgba(210,148,108,0.10) 0%, rgba(210,148,108,0) 70%);
+  filter: blur(80px);
+  animation: orb-drift-2 40s ease-in-out infinite;
+}
+
+.bg-orb-3 {
+  width: 380px;
+  height: 380px;
+  top: 42%;
+  left: 38%;
+  background: radial-gradient(circle, rgba(244,210,185,0.18) 0%, rgba(244,210,185,0) 70%);
+  filter: blur(70px);
+  animation: orb-drift-3 27s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bg-orb { animation: none !important; }
 }

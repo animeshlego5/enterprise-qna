@@ -48,17 +48,3 @@ services:
         condition: service_healthy
     restart: unless-stopped
     stop_grace_period: 15s
-
-  ui:
-    build:
-      context: .
-      dockerfile: Dockerfile.ui
-    ports:
-      - "3000:3000"
-    environment:
-      # In Docker, Next.js rewrites /api/* to the api service by name.
-      - API_URL=http://api:8000
-    depends_on:
-      api:
-        condition: service_healthy
-    restart: unless-stopped
