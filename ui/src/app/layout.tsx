@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Inter } from "next/font/google";
+import { Inter, Playfair_Display } from "next/font/google";
 import { Geist_Mono } from "next/font/google";
 import { ClerkProvider } from "@clerk/nextjs";
 import "./globals.css";
@@ -14,6 +14,14 @@ const geistMono = Geist_Mono({
   variable: "--font-geist-mono",
   subsets: ["latin"],
   display: "swap",
+});
+
+const playfair = Playfair_Display({
+  variable: "--font-playfair",
+  subsets: ["latin"],
+  display: "swap",
+  weight: ["400", "700"],
+  style: ["normal", "italic"],
 });
 
 export const metadata: Metadata = {
@@ -35,14 +43,9 @@ export default function RootLayout({
     <ClerkProvider>
       <html
         lang="en"
-        className={`${inter.variable} ${geistMono.variable} h-full antialiased`}
+        className={`${inter.variable} ${geistMono.variable} ${playfair.variable} h-full antialiased`}
       >
         <body className="min-h-full flex flex-col bg-claude-bg text-claude-text font-sans">
-          <div aria-hidden="true" className="bg-orbs">
-            <div className="bg-orb bg-orb-1" />
-            <div className="bg-orb bg-orb-2" />
-            <div className="bg-orb bg-orb-3" />
-          </div>
           {children}
         </body>
       </html>

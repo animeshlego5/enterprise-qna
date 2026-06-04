@@ -38,9 +38,13 @@ export function ModeSelector({ settings, onChange }: Props) {
 
   const isBackend = isSignedIn && !settings.forceLocal;
 
+  const modelLabel =
+    MODEL_OPTIONS[settings.provider].find(o => o.value === settings.model)?.label.split(" —")[0]
+    ?? settings.model;
+
   const modeLabel = isBackend
     ? "Cloud mode"
-    : `Local · ${PROVIDERS.find(p => p.id === settings.provider)?.label} · ${settings.model}`;
+    : `Local · ${PROVIDERS.find(p => p.id === settings.provider)?.label} · ${modelLabel}`;
 
   return (
     <div className="w-full max-w-3xl mb-4">
@@ -48,12 +52,11 @@ export function ModeSelector({ settings, onChange }: Props) {
         onClick={() => setOpen(v => !v)}
         className="flex w-full items-center justify-between rounded-xl border border-claude-border bg-claude-surface px-5 py-3 text-sm transition-colors hover:bg-claude-surface2"
       >
-        <div className="flex items-center gap-2.5">
-          <svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" className="text-claude-accent">
-            <circle cx="10" cy="10" r="3" />
-            <path d="M10 1v2M10 17v2M1 10h2M17 10h2M3.22 3.22l1.42 1.42M15.36 15.36l1.42 1.42M3.22 16.78l1.42-1.42M15.36 4.64l1.42-1.42" strokeLinecap="round" />
+        <div className="flex items-center gap-2.5 min-w-0">
+          <svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" className="shrink-0 text-claude-accent">
+            <path d="M4 6h12M13 3l3 3-3 3M16 14H4M7 11l-3 3 3 3" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
-          <span className="font-medium text-claude-text">{modeLabel}</span>
+          <span className="font-medium text-claude-text truncate">{modeLabel}</span>
         </div>
         <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"
           className={`transition-transform duration-200 text-claude-subtle ${open ? "rotate-180" : ""}`}>

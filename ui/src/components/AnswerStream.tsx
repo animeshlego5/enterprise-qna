@@ -89,8 +89,8 @@ export function AnswerStream({
 
       {/* Error state */}
       {error && (
-        <div className="rounded-xl border border-red-300/60 bg-red-50 p-5 text-base text-red-700 ring-1 ring-red-200">
-          <span className="font-semibold text-red-800">Error</span>
+        <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-5 text-base text-red-300 ring-1 ring-red-500/20">
+          <span className="font-semibold text-red-200">Error</span>
           <span className="mx-1.5 text-red-400">·</span>
           {error}
         </div>

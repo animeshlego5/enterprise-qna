@@ -159,7 +159,11 @@ export function LocalDocumentUpload({ settings }: { settings: LocalSettings }) {
                   <div className="ml-4 flex items-center gap-3 shrink-0">
                     <span className="text-xs text-claude-subtle font-mono">{doc.chunkCount} chunks</span>
                     <button onClick={() => onDelete(doc.source)}
-                      className="text-xs text-red-400 hover:text-red-600 transition-colors">✕</button>
+                      className="text-red-400 hover:text-red-300 transition-colors" aria-label="Remove document">
+                      <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                        <path d="M3 3l10 10M13 3L3 13" />
+                      </svg>
+                    </button>
                   </div>
                 </li>
               ))}
@@ -227,15 +231,19 @@ export function LocalDocumentUpload({ settings }: { settings: LocalSettings }) {
           {/* Feedback */}
           {uploadState.kind === "success" && (
             <div className="flex items-start gap-3 rounded-lg border border-claude-success/30 bg-claude-success/8 px-4 py-3 text-sm text-claude-success">
-              <span className="mt-0.5 shrink-0">✓</span>
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" className="mt-0.5 shrink-0">
+                <path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zm3.07 5.43-3.5 4a.5.5 0 0 1-.74.02l-1.5-1.5a.5.5 0 0 1 .7-.7l1.12 1.12 3.14-3.6a.5.5 0 0 1 .78.63z" />
+              </svg>
               <span>
                 <span className="font-semibold">{uploadState.filename}</span> — {uploadState.pages} pages, {uploadState.chunks} chunks added to local KB.
               </span>
             </div>
           )}
           {uploadState.kind === "error" && (
-            <div className="flex items-start gap-3 rounded-lg border border-red-300/60 bg-red-50 px-4 py-3 text-sm text-red-700">
-              <span className="mt-0.5 shrink-0">!</span>
+            <div className="flex items-start gap-3 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" className="mt-0.5 shrink-0">
+                <path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zm-.75 3.75h1.5v4.5h-1.5v-4.5zm.75 6.5a.875.875 0 1 1 0-1.75.875.875 0 0 1 0 1.75z" />
+              </svg>
               <span>{uploadState.message}</span>
             </div>
           )}

@@ -171,7 +171,7 @@ export function LocalQueryForm({ settings }: { settings: LocalSettings }) {
 
       {/* Error */}
       {state.kind === "error" && (
-        <div className="mt-6 flex items-start gap-3 rounded-xl border border-red-300/60 bg-red-50 p-5 text-base text-red-700">
+        <div className="mt-6 flex items-start gap-3 rounded-xl border border-red-500/30 bg-red-500/10 p-5 text-base text-red-300">
           <span className="mt-0.5 shrink-0 font-semibold">!</span>
           <span>{state.message}</span>
         </div>
@@ -190,8 +190,8 @@ export function LocalQueryForm({ settings }: { settings: LocalSettings }) {
                 </div>
                 <span className={`rounded-full px-2.5 py-0.5 text-sm font-semibold ring-1 ${
                   r.score >= 0.8 ? "text-claude-success bg-claude-success/10 ring-claude-success/20"
-                  : r.score >= 0.6 ? "text-amber-600 bg-amber-400/10 ring-amber-400/20"
-                  : "text-red-500 bg-red-400/10 ring-red-400/20"
+                  : r.score >= 0.6 ? "text-amber-300 bg-amber-400/10 ring-amber-400/20"
+                  : "text-red-400 bg-red-400/10 ring-red-400/20"
                 }`}>
                   {Math.round(r.score * 100)}% match
                 </span>
