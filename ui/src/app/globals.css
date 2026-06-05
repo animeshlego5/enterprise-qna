@@ -435,12 +435,12 @@
   border-color: #e8896b !important;
 }
 
-/* Knob — any direct child element acting as the thumb */
-.pricing-clerk-wrap [role="switch"] > *,
-.pricing-clerk-wrap [role="switch"] span,
-.pricing-clerk-wrap [role="switch"] div {
+/* Knob — cl-switchThumb is Clerk's stable semantic class for the thumb.
+   The 🔒️ / cl-internal-* classes are just Clerk's "internal" markers. */
+.pricing-clerk-wrap .cl-switchThumb {
+  background:       #ffffff !important;
   background-color: #ffffff !important;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4) !important;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45) !important;
 }
 
 /* Also catch checkbox-based toggles (input hidden, label is the track) */
@@ -448,6 +448,36 @@
   opacity: 1 !important;
   visibility: visible !important;
   accent-color: #e8896b !important;
+}
+
+/* ── Clerk PricingTable feature bullets ─────────────────────────────────── */
+/* Clerk's default check glyph renders as a heavy filled blob. Hide the icon
+   and replace it with a clean round bullet. Only feature icons are SVGs inside
+   the cards (the toggle is not an SVG), so hiding them here is safe. */
+.pricing-clerk-wrap [class*="FeaturesListItem"] svg,
+.pricing-clerk-wrap [class*="FeaturesListItem"] [class*="Icon"] {
+  display: none !important;
+}
+
+/* Target ONLY the outer list-item row. Its Content/Title/Description children
+   also contain "FeaturesListItem" in their class names, so they're excluded
+   here — otherwise each nested element would render its own bullet. */
+.pricing-clerk-wrap [class*="FeaturesListItem"]:not([class*="Content"]):not([class*="Title"]):not([class*="Description"]) {
+  display: flex !important;
+  align-items: flex-start !important;
+  gap: 0.625rem !important;
+  list-style: none !important;
+}
+
+/* One coral bullet per row, aligned to the first text line */
+.pricing-clerk-wrap [class*="FeaturesListItem"]:not([class*="Content"]):not([class*="Title"]):not([class*="Description"])::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  margin-top: 0.5em;
+  border-radius: 9999px;
+  background: #e8896b;
 }
 
 /* ── Clerk PricingTable dark-theme override ─────────────────────────────── */
