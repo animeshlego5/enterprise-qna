@@ -138,6 +138,7 @@
   border-radius: 9999px;
   cursor: pointer;
   letter-spacing: 0.025em;
+  white-space: nowrap; /* never wrap across lines regardless of screen width */
   transition: background 0.2s, box-shadow 0.2s, transform 0.2s;
 }
 .hero-nav-cta:hover {
@@ -388,4 +389,88 @@
   .hero-scroll-cue { animation: none !important; }
   .hero-video { will-change: auto; }
   .hero-content { will-change: auto; }
+}
+
+/* ── Mobile navbar ──────────────────────────────────────────────────────── */
+/* ≤ 639px: hide brand text, tighten padding so the pill still fits */
+@media (max-width: 639px) {
+  .hero-nav {
+    padding: 0 0.5rem 0 1rem;
+    height: 54px;
+  }
+  .hero-nav-brand {
+    display: none;   /* SVG logo stays; text hides to save space */
+  }
+  .hero-nav-cta {
+    padding: 0.45rem 0.9rem;
+    font-size: 0.8rem;
+    letter-spacing: 0.02em;
+  }
+  .hero-nav-login {
+    padding: 0.45rem 0.625rem;
+    font-size: 0.8rem;
+  }
+}
+
+/* ≤ 400px: drop "Log In" entirely — only the Get Started CTA remains */
+@media (max-width: 400px) {
+  .hero-nav-login { display: none; }
+}
+
+/* ── Clerk PricingTable billing-period toggle ───────────────────────────── */
+/* Use [role="switch"] without an element-type prefix — Clerk may render this
+   as a div, button, span, or label depending on the version.               */
+
+/* Track — off (default): visible against dark card background */
+.pricing-clerk-wrap [role="switch"] {
+  background-color: rgba(255, 255, 255, 0.14) !important;
+  border: 1.5px solid rgba(255, 255, 255, 0.36) !important;
+  transition: background-color 0.2s, border-color 0.2s !important;
+  box-sizing: border-box !important;
+}
+
+/* Track — on: coral */
+.pricing-clerk-wrap [role="switch"][aria-checked="true"] {
+  background-color: #e8896b !important;
+  border-color: #e8896b !important;
+}
+
+/* Knob — any direct child element acting as the thumb */
+.pricing-clerk-wrap [role="switch"] > *,
+.pricing-clerk-wrap [role="switch"] span,
+.pricing-clerk-wrap [role="switch"] div {
+  background-color: #ffffff !important;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4) !important;
+}
+
+/* Also catch checkbox-based toggles (input hidden, label is the track) */
+.pricing-clerk-wrap input[type="checkbox"] {
+  opacity: 1 !important;
+  visibility: visible !important;
+  accent-color: #e8896b !important;
+}
+
+/* ── Clerk PricingTable dark-theme override ─────────────────────────────── */
+/* Clerk's PricingTable is rendered from a CDN bundle — class names are not
+   stable or predictable. We target HTML element types directly inside our
+   wrapper so the override works regardless of which Clerk version or class
+   naming scheme is used.
+   Buttons are intentionally excluded: their text colour is set by Clerk via
+   colorPrimary contrast and must not be overridden here. */
+.pricing-clerk-wrap p,
+.pricing-clerk-wrap span,
+.pricing-clerk-wrap h1,
+.pricing-clerk-wrap h2,
+.pricing-clerk-wrap h3,
+.pricing-clerk-wrap h4,
+.pricing-clerk-wrap h5,
+.pricing-clerk-wrap h6,
+.pricing-clerk-wrap li,
+.pricing-clerk-wrap label,
+.pricing-clerk-wrap small,
+.pricing-clerk-wrap strong,
+.pricing-clerk-wrap dt,
+.pricing-clerk-wrap dd,
+.pricing-clerk-wrap caption {
+  color: #eef1f7 !important;
 }

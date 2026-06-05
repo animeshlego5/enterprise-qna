@@ -29,24 +29,24 @@ export function PricingSection() {
         </div>
 
         {/* Clerk-managed plans + checkout */}
-        <PricingTable
-          newSubscriptionRedirectUrl="/"
-          appearance={{
-            variables: {
-              colorPrimary: "#e8896b",
-              colorBackground: "#141a2b",
-              colorText: "#eef1f7",
-              colorTextSecondary: "#a8b0c4",
-              colorInputBackground: "#1d2438",
-              colorInputText: "#eef1f7",
-              colorNeutral: "#eef1f7",
-              colorDanger: "#f87171",
-              colorSuccess: "#3fcf8e",
-              borderRadius: "0.9rem",
-              fontFamily: "var(--font-inter), system-ui, sans-serif",
-            },
-          }}
-        />
+        <div className="pricing-clerk-wrap">
+          <PricingTable
+            newSubscriptionRedirectUrl="/"
+            appearance={{
+              variables: {
+                colorPrimary:       "#e8896b",   // coral accent — CTA buttons
+                colorBackground:    "#141a2b",   // deep-navy card surface
+                colorText:          "#eef1f7",   // near-white primary text
+                colorTextSecondary: "#a8b0c4",   // muted secondary text
+                colorNeutral:       "#2a3248",   // border / divider colour
+                colorDanger:        "#f87171",
+                colorSuccess:       "#3fcf8e",
+                borderRadius:       "0.9rem",
+                fontFamily:         "var(--font-inter), system-ui, sans-serif",
+              },
+            }}
+          />
+        </div>
 
         <p className="mt-8 text-center text-sm text-claude-subtle">
           The Free tier runs entirely in your browser with your own OpenAI / Gemini /
